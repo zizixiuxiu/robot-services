@@ -114,7 +114,8 @@ class Handler(BaseHTTPRequestHandler):
             timestamp = str(int(time.time()))
             output_dir = OUTPUT_BASE / f"output_http_{base}_{timestamp}"
             output_dir.mkdir(parents=True, exist_ok=True)
-            output_name = f"{base}下车间.xlsx"
+            suffix = "" if "下车间" in base else "下车间"
+            output_name = f"{base}{suffix}.xlsx"
             output_path = output_dir / output_name
 
             t0 = time.time()
