@@ -58,12 +58,8 @@ def _zip_output_files(output_dir: str, output_files: list[str], zip_name: str, a
         for file_path in output_files:
             path = Path(file_path)
             if path.exists():
-                # 保留原始文件相对 output_dir 的目录结构，并放入 archive_prefix 下
-                try:
-                    arcname = str(path.relative_to(output_dir))
-                except ValueError:
-                    arcname = path.name
-                zf.write(path, f"{archive_prefix}/{arcname}")
+                # 只把文件平铺到 archive_prefix 根文件夹下，不要子文件夹
+                zf.write(path, f"{archive_prefix}/{path.name}")
     return zip_path
 
 
