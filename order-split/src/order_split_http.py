@@ -45,14 +45,25 @@ logger = logging.getLogger("order-split")
 # ==================================================
 
 
-def _zip_output_files(output_dir: str, output_files: list[str], zip_name: str) -> str:
-    """将多个输出文件打包成 zip，返回 zip 路径。"""
+def _zip_output_files(output_dir: str, output_files: list[str], zip_name: str, archive_prefix: str = None) -> str:
+    """将多个输出文件打包成 zip，返回 zip 路径。
+
+    archive_prefix 指定 zip 内根文件夹名称；如果不传，使用 zip 文件名（去掉 .zip）。
+    """
     zip_path = str(Path(output_dir) / zip_name)
+    if archive_prefix is None:
+        archive_prefix = Path(zip_name).stem
+    logger.info("打包 zip: output_dir=%s, zip_name=%s, archive_prefix=%s, files=%d", output_dir, zip_name, archive_prefix, len(output_files))
     with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
         for file_path in output_files:
             path = Path(file_path)
             if path.exists():
-                zf.write(path, path.name)
+                # 保留原始文件相对 output_dir 的目录结构，并放入 archive_prefix 下
+                try:
+                    arcname = str(path.relative_to(output_dir))
+                except ValueError:
+                    arcname = path.name
+                zf.write(path, f"{archive_prefix}/{arcname}")
     return zip_path
 
 
@@ -167,6 +178,7 @@ class Handler(BaseHTTPRequestHandler):
             ]
             pair_key = str(Path(input_path).name)
             output_files_pair = []
+            logger.info("准备构建 output_files, count=%d, output_dir=%s", len(output_files), output_dir)
 
             if len(output_files) > 2:
                 zip_name = f"{get_clean_filename(Path(input_path).name)}_料单拆分.zip"
