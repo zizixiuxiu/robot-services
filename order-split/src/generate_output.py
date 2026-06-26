@@ -4,7 +4,7 @@
 import os
 import re
 import shutil
-import pandas as pd
+from io import BytesIO
 from openpyxl import load_workbook
 from openpyxl.cell.cell import MergedCell
 
@@ -41,13 +41,9 @@ MATERIAL_CODE_MAP = {'80': '红胡桃原木'}
 def read_input_data(input_path):
     """读取输入文件的实木柜门和实木附件 sheet
 
-    合并单元格处理：逐行按需从 xls 合并单元格获取值，不提前污染 DataFrame
+    合并单元格处理：只使用 xlrd 打开一次文件，避免 pandas + xlrd 重复 IO。
     """
-    import pandas as pd
     import xlrd
-
-    df_door = pd.read_excel(input_path, sheet_name='实木柜门', header=None)
-    df_attach = pd.read_excel(input_path, sheet_name='实木附件', header=None)
 
     book = xlrd.open_workbook(input_path, formatting_info=True)
     sheet_door = book.sheet_by_name('实木柜门')
@@ -55,7 +51,7 @@ def read_input_data(input_path):
 
     def get_merged_value(sheet, row_idx, col_idx):
         """获取单元格值，如果在合并区域内且原值为空，返回左上角值。
-        xlrd 空单元格返回 ''，这里统一转为 None 以兼容 pandas 行为。"""
+        xlrd 空单元格返回 ''，这里统一转为 None。"""
         val = sheet.cell(row_idx, col_idx).value
         if val == '' or val is None:
             val = None
@@ -94,21 +90,27 @@ def read_input_data(input_path):
                 return float(num_str) if '.' in num_str else int(num_str)
         return val
 
-    def extract_data(df, sheet):
-        """从 DataFrame 提取有效数据行，同时处理合并单元格"""
+    def _is_empty(val):
+        """判断单元格值是否为空（兼容 float nan）"""
+        if val is None:
+            return True
+        if isinstance(val, float):
+            import math
+            return math.isnan(val)
+        return str(val).strip() == ''
+
+    def extract_data(sheet):
+        """从 xlrd sheet 提取有效数据行，同时处理合并单元格"""
         data = []
-        for idx in range(6, len(df)):
+        for idx in range(6, sheet.nrows):
             order_no = get_merged_value(sheet, idx, 1)
             area = get_merged_value(sheet, idx, 2)
             name = get_merged_value(sheet, idx, 3)
 
             # 跳过空行
-            if not order_no or pd.isna(order_no) or order_no == '':
+            if _is_empty(order_no) or _is_empty(area) or _is_empty(name):
                 continue
-            if not area or pd.isna(area) or area == '':
-                continue
-            if not name or pd.isna(name) or name == '':
-                continue
+
             order_str = str(order_no).strip()
             # 过滤说明行：order_no 必须以订单号格式开头（字母数字+'-'+数字，如 S2604-4106-1）
             if not re.match(r'^[A-Za-z0-9]+-\d+', order_str):
@@ -133,8 +135,8 @@ def read_input_data(input_path):
             })
         return data
 
-    door_data = extract_data(df_door, sheet_door)
-    attach_data = extract_data(df_attach, sheet_attach)
+    door_data = extract_data(sheet_door)
+    attach_data = extract_data(sheet_attach)
     return door_data, attach_data
 
 
@@ -142,9 +144,19 @@ def read_input_data(input_path):
 MATERIAL_CODE_MAP = {'80': '红胡桃原木'}
 
 
+def _is_empty(val):
+    """判断值是否为空（None / nan / 空字符串）"""
+    if val is None:
+        return True
+    if isinstance(val, float):
+        import math
+        return math.isnan(val)
+    return str(val).strip() == ''
+
+
 def is_material_placeholder(val):
     """判断材质值是否是占位符（纯数字或空），需要从子件收集真实材质"""
-    if pd.isna(val):
+    if _is_empty(val):
         return True
     s = str(val).strip()
     if not s:
@@ -177,11 +189,11 @@ def resolve_material(raw_material, struct_materials):
 
 def resolve_color(raw_color, struct_colors):
     """根据结构件汇总颜色"""
-    if not pd.isna(raw_color):
+    if not _is_empty(raw_color):
         s = str(raw_color).strip()
         if s:
             return s
-    cols = [c for c in struct_colors if not pd.isna(c)]
+    cols = [c for c in struct_colors if not _is_empty(c)]
     cols = list(dict.fromkeys(cols))
     if cols:
         return '、'.join(str(c) for c in cols)
@@ -199,7 +211,7 @@ def build_sheet1_rows(order_no, door_data, attach_data):
         if should_ignore_name(item['name']):
             continue
         raw_remark = item['remark']
-        if pd.isna(raw_remark):
+        if _is_empty(raw_remark):
             sheet1_remark = None
             guiti_remark = 0
         else:
@@ -258,7 +270,7 @@ def build_sheet1_rows(order_no, door_data, attach_data):
         color = resolve_color(item['color'], struct_colors)
 
         raw_remark = item['remark']
-        if pd.isna(raw_remark):
+        if _is_empty(raw_remark):
             sheet1_remark = None
             guiti_remark = '0'
         else:
@@ -300,7 +312,7 @@ def build_guiti_rows(order_no, sheet1_rows):
     rows = []
 
     for i, srow in enumerate(sheet1_rows):
-        qty = int(srow['qty']) if not pd.isna(srow['qty']) else 1
+        qty = int(srow['qty']) if not _is_empty(srow['qty']) else 1
         area_key = srow['area'] + '_0'
         raw_material = srow['material']
         # 柜门材质统一加"实木"前缀（系统识别需要）
@@ -423,8 +435,12 @@ def find_template(input_path):
     return None
 
 
-def generate_one(input_path, template_path, order_no, output_dir, name=None):
-    """生成单个订单的输出文件"""
+def generate_one(input_path, template_path_or_stream, order_no, output_dir, name=None):
+    """生成单个订单的输出文件
+
+    template_path_or_stream: 模板文件路径，或已读取到内存的 BytesIO 对象。
+                             传入 BytesIO 时从内存加载 workbook，避免重复磁盘 IO。
+    """
     door_data, attach_data = read_input_data(input_path)
     sheet1_rows = build_sheet1_rows(order_no, door_data, attach_data)
     guiti_rows = build_guiti_rows(order_no, sheet1_rows)
@@ -437,7 +453,11 @@ def generate_one(input_path, template_path, order_no, output_dir, name=None):
     out_name = f'{formatted_order}{name}料单.xlsx'
     out_path = os.path.join(output_dir, out_name)
 
-    wb = load_workbook(template_path)
+    if isinstance(template_path_or_stream, BytesIO):
+        template_path_or_stream.seek(0)
+        wb = load_workbook(template_path_or_stream)
+    else:
+        wb = load_workbook(template_path_or_stream)
 
     def get_style_row(ws, start_row):
         """获取某行每个单元格的样式，用于复制到新行"""
@@ -486,9 +506,9 @@ def generate_one(input_path, template_path, order_no, output_dir, name=None):
         data = [
             r['order_no'], r['area'], r['name'], r['length'], r['width'],
             r['thickness'], r['qty'], r['material'],
-            r['wood_skin'] if not pd.isna(r['wood_skin']) else None,
-            r['veneer'] if not pd.isna(r['veneer']) else None,
-            r['edge'] if not pd.isna(r['edge']) else None,
+            None if _is_empty(r['wood_skin']) else r['wood_skin'],
+            None if _is_empty(r['veneer']) else r['veneer'],
+            None if _is_empty(r['edge']) else r['edge'],
             r['color'], r['sheet1_remark']
         ]
         for col, val in enumerate(data, start=1):
@@ -564,12 +584,16 @@ def generate_all(input_path, output_dir):
         print('错误: 未找到模板文件')
         return
 
+    # 模板只读一次到内存，后续每个订单从内存加载，减少重复磁盘 IO
+    with open(template_path, 'rb') as f:
+        template_stream = BytesIO(f.read())
+
     name = extract_name_from_path(input_path)
 
     for order_no in sorted(order_nos):
         # 每个订单单独一个子文件夹
         order_folder = os.path.join(output_dir, order_no)
-        generate_one(input_path, template_path, order_no, order_folder, name)
+        generate_one(input_path, template_stream, order_no, order_folder, name)
         print(f'Generated: {order_no}')
 
 
