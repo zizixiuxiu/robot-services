@@ -1,0 +1,23 @@
+services:
+  order-split:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+    container_name: order-split-8002
+    ports:
+      - "8002:8002"
+    volumes:
+      - ../../src:/app/src:ro
+      - ../../data/output:/app/data/output
+      - ../../logs:/app/logs
+    environment:
+      - PYTHONUNBUFFERED=1
+      - LOG_DIR=/app/logs
+      - ORDER_SPLIT_MAX_WORKERS=2
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8002/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
