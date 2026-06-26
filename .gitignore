@@ -1,0 +1,61 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs and data
+logs/
+*.log
+data/
+output/
+output_*/
+
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json
+
+# Docker
+.dockerignore
+
+# Local git backups from repo merge
+*.git.bak/
+
+# Local environment files
+.env
+.env.local
+.env.*.local
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.bak
