@@ -21,3 +21,4 @@ venv/
 *.swo
 *~
 .DS_Store
+src/*.xlsx
