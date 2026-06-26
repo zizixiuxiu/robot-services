@@ -1,3 +1,5 @@
+name: hardware-summary
+
 services:
   hardware-summary:
     build:

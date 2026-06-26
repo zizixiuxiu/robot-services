@@ -1,3 +1,5 @@
+name: may-sales
+
 services:
   dealer-sales:
     build:

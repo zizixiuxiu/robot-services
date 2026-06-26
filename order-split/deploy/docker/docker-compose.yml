@@ -1,3 +1,5 @@
+name: order-split
+
 services:
   order-split:
     build:
