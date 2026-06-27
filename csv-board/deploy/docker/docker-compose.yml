@@ -1,0 +1,25 @@
+name: csv-board
+
+services:
+  csv-board:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+    container_name: csv-board-8004
+    ports:
+      - "0.0.0.0:8004:8004"
+    volumes:
+      - ../../src:/app/src:ro
+      - ../../data/output:/app/data/output
+      - ../../logs:/app/logs
+    environment:
+      - PYTHONUNBUFFERED=1
+      - OUTPUT_BASE=/app/data/output
+      - LOG_DIR=/app/logs
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8004/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
