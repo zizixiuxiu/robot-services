@@ -1,0 +1,25 @@
+name: pvc-classify
+
+services:
+  pvc-classify:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+    container_name: pvc-classify-8005
+    ports:
+      - "0.0.0.0:8005:8005"
+    volumes:
+      - ../../src:/app/src:ro
+      - ../../data/output:/app/data/output
+      - ../../logs:/app/logs
+    environment:
+      - PYTHONUNBUFFERED=1
+      - OUTPUT_BASE=/app/data/output
+      - LOG_DIR=/app/logs
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8005/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
