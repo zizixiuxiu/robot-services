@@ -27,7 +27,7 @@ NODE_EXE = "node"
 # 默认模板路径；Docker 中通过环境变量 DEFAULT_TEMPLATE 覆盖为 /app/templates/...
 DEFAULT_TEMPLATE = Path(os.getenv(
     "DEFAULT_TEMPLATE",
-    r'D:\wechat\xwechat_files\wxid_0fh4oxng8dq212_f810\msg\file\2026-06\2026年5月销售部业绩核对表 - 副本.xlsx'
+    str(WORK_DIR / "templates" / "2026年5月销售部业绩核对表 - 副本.xlsx")
 ))
 
 # 输出目录；默认在项目 data/output_may_sales，Docker 中通过环境变量覆盖为 /app/output_may_sales

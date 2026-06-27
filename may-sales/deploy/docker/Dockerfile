@@ -20,6 +20,7 @@ RUN npm install
 
 # 复制应用代码（运行时通常由 volume 覆盖，用于保证镜像完整）
 COPY src/dealer_sales_http.py src/generate_may_sales_report.js ./
+COPY src/templates ./templates
 
 # 输出目录
 RUN mkdir -p /app/output_may_sales

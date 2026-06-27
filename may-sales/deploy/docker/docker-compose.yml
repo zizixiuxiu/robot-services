@@ -12,13 +12,14 @@ services:
       # 代码文件挂载，便于热更新
       - ../../src/dealer_sales_http.py:/app/dealer_sales_http.py:ro
       - ../../src/generate_may_sales_report.js:/app/generate_may_sales_report.js:ro
+      - ../../src/templates:/app/templates:ro
       - ../../config/package.json:/app/package.json:ro
       # 输出目录挂载，便于调试查看
       - ../../data/output_may_sales:/app/output_may_sales
       - ../../logs:/app/logs
     environment:
       # 默认模板；如需使用本地默认模板，可挂载并设置此变量
-      - DEFAULT_TEMPLATE=/app/output_may_sales/2026年5月销售部业绩核对表 - 副本.xlsx
+      - DEFAULT_TEMPLATE=/app/templates/2026年5月销售部业绩核对表 - 副本.xlsx
       - OUTPUT_DIR=/app/output_may_sales
       - LOG_DIR=/app/logs
       - PYTHONUNBUFFERED=1
