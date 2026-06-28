@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+
+{% block title %}{{ "编辑客户信息" if owner else "新建客户信息" }} - 平贴管理系统{% endblock %}
+{% block page_heading %}{{ "编辑客户信息" if owner else "新建客户信息" }}{% endblock %}
+{% block page_subtitle %}用来标记订单和出库归属，不参与库存分仓。{% endblock %}
+
+{% block content %}
+<section class="page-card">
+    <div class="section-header">
+        <div class="section-title">
+            <h2>客户信息表单</h2>
+            <p>建议保持编码稳定，这样后续接口和 AI 规则更容易映射。</p>
+        </div>
+    </div>
+    <div class="panel-body">
+        <form method="post" action="{{ '/owners/' + owner.id|string + '/edit' if owner else '/owners/' }}">
+            <div class="form-grid">
+                <div class="form-field">
+                    <label for="name">名称</label>
+                    <input id="name" type="text" name="name" value="{{ owner.name if owner else '' }}" required>
+                </div>
+                <div class="form-field">
+                    <label for="code">编码</label>
+                    <input id="code" type="text" name="code" value="{{ owner.code if owner else '' }}" required>
+                </div>
+                <div class="form-field full">
+                    <label>启用状态</label>
+                    <div class="checkbox-row">
+                        <input id="enabled" type="checkbox" name="enabled" value="true" {{ 'checked' if not owner or owner.enabled else '' }}>
+                        <label for="enabled">允许在订单和出库单中使用</label>
+                    </div>
+                </div>
+            </div>
+            <div class="toolbar" style="margin-top: 20px;">
+                <button type="submit">保存客户信息</button>
+                <a class="button-secondary" href="/owners/">返回列表</a>
+            </div>
+        </form>
+    </div>
+</section>
+{% endblock %}

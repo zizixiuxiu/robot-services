@@ -1,0 +1,176 @@
+{% extends "base.html" %}
+
+{% block title %}AI 录单 - Simple IMS{% endblock %}
+{% block page_heading %}AI 录单{% endblock %}
+{% block page_subtitle %}上传采购单/订单截图，识别后一键生成订单，随后直接进入编辑界面补充单价与调整内容。{% endblock %}
+
+{% block content %}
+<style>
+    .ai-drop-zone {
+        border: 2px dashed #b7c3d1;
+        border-radius: 12px;
+        padding: 48px 24px;
+        text-align: center;
+        color: #6f7f90;
+        background: #f8fafc;
+        cursor: pointer;
+        transition: all 0.2s ease;
+        margin-bottom: 16px;
+    }
+    .ai-drop-zone:hover, .ai-drop-zone.drag-over {
+        border-color: #325d88;
+        background: #eef4f8;
+        color: #325d88;
+    }
+    .ai-drop-zone strong {
+        display: block;
+        margin-bottom: 8px;
+        font-size: 16px;
+    }
+    .ai-preview-img {
+        max-width: 100%;
+        max-height: 360px;
+        border: 1px solid #d9e0e7;
+        border-radius: 8px;
+        margin-bottom: 16px;
+        display: none;
+    }
+    .ai-status { margin-top: 16px; }
+    .ai-status .success { color: #3f7d4f; }
+    .ai-status .error { color: #b6574d; }
+    .ai-output {
+        background: #f8fafc;
+        border: 1px solid #e8eef4;
+        border-radius: 8px;
+        padding: 16px;
+        overflow-x: auto;
+        font-size: 13px;
+        line-height: 1.5;
+        margin-top: 12px;
+    }
+</style>
+
+<section class="page-card">
+    <div class="section-header">
+        <div class="section-title">
+            <h2>图片识别</h2>
+            <p>支持点击选择或拖拽上传图片。</p>
+        </div>
+    </div>
+
+    <div class="panel-body">
+        <input type="file" id="imageInput" accept="image/*" style="display:none;">
+
+        <div class="ai-drop-zone" id="dropZone">
+            <strong>点击选择或拖拽图片到此处</strong>
+            <span id="fileName">支持 JPG、PNG 等常见图片格式</span>
+        </div>
+
+        <img id="preview" class="ai-preview-img" alt="预览">
+
+        <div class="form-group" style="max-width: 400px; margin-bottom: 16px;">
+            <label for="ownerSelect">客户</label>
+            <select id="ownerSelect" class="form-control">
+                {% for owner in owners %}
+                <option value="{{ owner.id }}">{{ owner.name }}</option>
+                {% endfor %}
+            </select>
+        </div>
+
+        <button id="createBtn" class="button" onclick="createOrder()">识别并生成订单</button>
+
+        <div class="ai-status" id="status"></div>
+        <pre class="ai-output" id="output" style="display:none;"></pre>
+    </div>
+</section>
+
+<script>
+    const imageInput = document.getElementById('imageInput');
+    const preview = document.getElementById('preview');
+    const dropZone = document.getElementById('dropZone');
+    const fileName = document.getElementById('fileName');
+    const ownerSelect = document.getElementById('ownerSelect');
+    const status = document.getElementById('status');
+    const output = document.getElementById('output');
+    const createBtn = document.getElementById('createBtn');
+
+    function setFile(file) {
+        if (!file || !file.type.startsWith('image/')) {
+            alert('请选择图片文件');
+            return;
+        }
+        const dataTransfer = new DataTransfer();
+        dataTransfer.items.add(file);
+        imageInput.files = dataTransfer.files;
+        fileName.textContent = file.name;
+        preview.src = URL.createObjectURL(file);
+        preview.style.display = 'block';
+    }
+
+    imageInput.addEventListener('change', () => {
+        const file = imageInput.files[0];
+        if (file) setFile(file);
+    });
+
+    dropZone.addEventListener('click', () => imageInput.click());
+
+    ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+        dropZone.addEventListener(eventName, (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+        }, false);
+    });
+
+    ['dragenter', 'dragover'].forEach(eventName => {
+        dropZone.addEventListener(eventName, () => dropZone.classList.add('drag-over'), false);
+    });
+
+    ['dragleave', 'drop'].forEach(eventName => {
+        dropZone.addEventListener(eventName, () => dropZone.classList.remove('drag-over'), false);
+    });
+
+    dropZone.addEventListener('drop', (e) => {
+        const file = e.dataTransfer.files[0];
+        setFile(file);
+    });
+
+    async function createOrder() {
+        const file = imageInput.files[0];
+        if (!file) {
+            alert('请先选择或拖拽一张图片到上方区域');
+            return;
+        }
+
+        createBtn.disabled = true;
+        status.innerHTML = '<p>识别并生成订单中，请稍候...</p>';
+        output.style.display = 'none';
+        output.textContent = '';
+
+        const formData = new FormData();
+        formData.append('image', file);
+        formData.append('owner_user_id', ownerSelect.value);
+
+        try {
+            const response = await fetch('/ai/orders/create', {
+                method: 'POST',
+                body: formData
+            });
+            const data = await response.json();
+            if (response.ok && data.ok) {
+                status.innerHTML = '<p class="success">✅ 订单 ' + (data.order_no || '') + ' 创建成功，正在跳转...</p>';
+                setTimeout(() => {
+                    window.location.href = '/orders/' + data.order_id + '/edit';
+                }, 800);
+            } else {
+                status.innerHTML = '<p class="error">创建失败：' + (data.detail || data.message || '未知错误') + '</p>';
+                output.textContent = JSON.stringify(data, null, 2);
+                output.style.display = 'block';
+                createBtn.disabled = false;
+            }
+        } catch (err) {
+            status.innerHTML = '<p class="error">请求异常：' + err.message + '</p>';
+            createBtn.disabled = false;
+        }
+    }
+</script>
+{% endblock %}

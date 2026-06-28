@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+
+{% block title %}客户信息 - 平贴管理系统{% endblock %}
+{% block page_heading %}客户信息{% endblock %}
+{% block page_subtitle %}这里不是仓库，而是订单归属维度，比如奢匠和固豪。{% endblock %}
+
+{% block content %}
+<section class="page-card">
+    <div class="section-header">
+        <div class="section-title">
+            <h2>用户归属列表</h2>
+            <p>库存不会按这里拆分，这个维度只用于订单和出库归属。</p>
+        </div>
+        <div class="toolbar">
+            <a class="button" href="/owners/new">新建客户信息</a>
+        </div>
+    </div>
+    <div class="panel-body">
+        {% if error %}
+        <div class="error-banner">{{ error }}</div>
+        {% endif %}
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>名称</th>
+                    <th>编码</th>
+                    <th>状态</th>
+                    <th>操作</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for owner in owners %}
+                <tr>
+                    <td>{{ owner.id }}</td>
+                    <td>{{ owner.name }}</td>
+                    <td>{{ owner.code }}</td>
+                    <td>
+                        <span class="badge {{ 'badge-good' if owner.enabled else 'badge-bad' }}">
+                            {{ "启用" if owner.enabled else "停用" }}
+                        </span>
+                    </td>
+                    <td class="cell-actions">
+                        <a class="button-secondary" href="/owners/{{ owner.id }}/edit">编辑</a>
+                        <form class="inline-form" method="post" action="/owners/{{ owner.id }}/delete" onsubmit="return confirm('确认删除客户「{{ owner.name }}」吗？删除后不可恢复。');">
+                            <button type="submit" class="button-secondary button-danger">删除</button>
+                        </form>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
+{% endblock %}

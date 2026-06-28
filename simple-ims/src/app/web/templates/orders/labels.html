@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ order.order_no }} - 标签打印</title>
+    <style>
+        @page {
+            size: A4 portrait;
+            margin: 8mm;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            font-family: "SimSun", "Songti SC", "Microsoft YaHei", serif;
+            color: #111;
+            background: #f3f4f6;
+        }
+
+        .toolbar {
+            max-width: 210mm;
+            margin: 16px auto 0;
+            display: flex;
+            gap: 10px;
+        }
+
+        .toolbar button,
+        .toolbar a {
+            border: 1px solid #c0c7d0;
+            background: #fff;
+            color: #1c2e46;
+            padding: 8px 14px;
+            border-radius: 8px;
+            text-decoration: none;
+            cursor: pointer;
+            font-size: 14px;
+        }
+
+        .paper {
+            width: 210mm;
+            min-height: 297mm;
+            margin: 8px auto 20px;
+            padding: 8mm;
+            background: #fff;
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.08);
+        }
+
+        .label-grid {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 6mm;
+            align-items: start;
+        }
+
+        .label-card {
+            width: 174mm;
+            max-width: 100%;
+            margin: 0 auto;
+            min-height: 45mm;
+            break-inside: avoid;
+            page-break-inside: avoid;
+        }
+
+        .label-table {
+            width: 174mm;
+            max-width: 100%;
+            height: 45mm;
+            border-collapse: collapse;
+            table-layout: fixed;
+        }
+
+        .label-table td {
+            border: 1.4px solid #222;
+            padding: 4px 6px;
+            text-align: center;
+            vertical-align: middle;
+            font-size: 20px;
+            line-height: 1.2;
+            word-break: break-word;
+        }
+
+        .label-table .label-title {
+            width: 22mm;
+            font-size: 24px;
+            font-weight: 700;
+            letter-spacing: 2px;
+        }
+
+        .label-table .label-value {
+            width: 65mm;
+            font-size: 18px;
+        }
+
+        .label-table .strong-value {
+            font-size: 26px;
+            font-weight: 700;
+        }
+
+        .label-table .small-value {
+            font-size: 14px;
+            line-height: 1.25;
+        }
+
+        @media print {
+            body {
+                background: #fff;
+            }
+
+            .toolbar {
+                display: none;
+            }
+
+            .paper {
+                width: auto;
+                min-height: auto;
+                margin: 0;
+                padding: 0;
+                box-shadow: none;
+            }
+
+            .label-grid {
+                gap: 6mm;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="toolbar">
+        <button onclick="window.print()">打印标签</button>
+        <a href="/orders/">返回订单列表</a>
+        <a href="/orders/{{ order.id }}">返回详情</a>
+    </div>
+
+    <div class="paper">
+        <div class="label-grid">
+            {% for line in label_lines %}
+            <section class="label-card">
+                <table class="label-table">
+                    <tbody>
+                        <tr>
+                            <td class="label-title">基材规格</td>
+                            <td class="label-value small-value">{{ line.spec }}</td>
+                            <td class="label-title">生产日期</td>
+                            <td class="label-value">{{ line.production_date }}</td>
+                        </tr>
+                        <tr>
+                            <td class="label-title">基材类别</td>
+                            <td class="label-value strong-value">{{ line.substrate_category }}</td>
+                            <td class="label-title">数量</td>
+                            <td class="label-value strong-value">{{ line.qty }}</td>
+                        </tr>
+                        <tr>
+                            <td class="label-title">产品颜色</td>
+                            <td class="label-value">{{ line.product_color }}</td>
+                            <td class="label-title">单面</td>
+                            <td class="label-value strong-value">{{ line.surface_type }}</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </section>
+            {% endfor %}
+        </div>
+    </div>
+</body>
+</html>

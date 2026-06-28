@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+
+{% block title %}减库存 - Simple IMS{% endblock %}
+{% block page_heading %}减库存{% endblock %}
+{% block page_subtitle %}这是手工库存扣减入口，会校验不能扣成负库存。{% endblock %}
+
+{% block content %}
+<section class="page-card">
+    <div class="section-header">
+        <div class="section-title">
+            <h2>手工减库存</h2>
+            <p>适合做盘点调整或补录历史出库。</p>
+        </div>
+    </div>
+    <div class="panel-body">
+        {% if error %}
+        <div class="error-banner">{{ error }}</div>
+        {% endif %}
+        <form method="post" action="/stock/out">
+            <div class="form-grid">
+                <div class="form-field">
+                    <label for="product_id">产品</label>
+                    <select name="product_id" id="product_id" required>
+                        {% for product in products %}
+                        <option value="{{ product.id }}">{{ product.product_code }} - {{ product.product_name }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="form-field">
+                    <label for="qty">数量</label>
+                    <input type="number" name="qty" id="qty" min="1" required />
+                </div>
+                <div class="form-field full">
+                    <label for="remark">备注</label>
+                    <textarea name="remark" id="remark"></textarea>
+                </div>
+            </div>
+            <div class="toolbar" style="margin-top: 20px;">
+                <button type="submit">确认减库存</button>
+                <a class="button-secondary" href="/stock/">返回库存</a>
+            </div>
+        </form>
+    </div>
+</section>
+{% endblock %}

@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+
+{% block title %}{{ outbound.outbound_no }} - 平贴管理系统{% endblock %}
+{% block page_heading %}出库单详情{% endblock %}
+{% block page_subtitle %}这里查看共享库存的实际发货记录。{% endblock %}
+
+{% block content %}
+<div class="stack">
+    <section class="page-card">
+        <div class="section-header">
+            <div class="section-title">
+                <h2>{{ outbound.outbound_no }}</h2>
+                <p>关联订单：{{ outbound.related_order.order_no if outbound.related_order else "-" }}</p>
+            </div>
+            <div class="toolbar">
+                <a class="button" href="/outbounds/{{ outbound.id }}/print" target="_blank">打印出库单</a>
+                <a class="button-secondary" href="/outbounds/">返回列表</a>
+            </div>
+        </div>
+        <div class="panel-body">
+            <div class="info-grid">
+                <div class="label">出库单号</div><div>{{ outbound.outbound_no }}</div>
+                <div class="label">出库日期</div><div>{{ outbound.outbound_date }}</div>
+                <div class="label">客户信息</div><div>{{ outbound.owner.name }}</div>
+                <div class="label">关联入库单</div><div>{{ outbound.related_inbound.inbound_no if outbound.related_inbound else "-" }}</div>
+                <div class="label">关联订单</div><div>{{ outbound.related_order.order_no if outbound.related_order else "-" }}</div>
+                <div class="label">备注</div><div>{{ outbound.remark or "-" }}</div>
+                <div class="label">创建时间</div><div>{{ outbound.created_at|localtime }}</div>
+            </div>
+        </div>
+    </section>
+
+    <section class="page-card">
+        <div class="section-header">
+            <div class="section-title">
+                <h2>出库明细</h2>
+                <p>这些数量已经从共享库存中扣减。</p>
+            </div>
+        </div>
+        <div class="panel-body">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>产品</th>
+                        <th>规格</th>
+                        <th>单位</th>
+                        <th>数量</th>
+                        <th>单价</th>
+                        <th>总价</th>
+                        <th>备注</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% set ns = namespace(total_qty=0, total_amount=0) %}
+                    {% for line in outbound.lines %}
+                    {% set ns.total_qty = ns.total_qty + line.qty %}
+                    {% set ns.total_amount = ns.total_amount + (line.total_price or 0) %}
+                    <tr>
+                        <td>{{ line.product.product_name }}</td>
+                        <td>{{ line.product.spec or "-" }}</td>
+                        <td>{{ line.product.unit or "-" }}</td>
+                        <td>{{ line.qty }}</td>
+                        <td>{{ "%.2f"|format(line.unit_price or 0) }}</td>
+                        <td>{{ "%.2f"|format(line.total_price or 0) }}</td>
+                        <td>{{ line.remark or "-" }}</td>
+                    </tr>
+                    {% endfor %}
+                    <tr>
+                        <td><strong>合计</strong></td>
+                        <td></td>
+                        <td></td>
+                        <td><strong>{{ ns.total_qty }}</strong></td>
+                        <td></td>
+                        <td><strong>{{ "%.2f"|format(ns.total_amount) }}</strong></td>
+                        <td></td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </section>
+</div>
+{% endblock %}

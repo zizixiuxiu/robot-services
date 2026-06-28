@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+
+{% block title %}库存台账 - Simple IMS{% endblock %}
+{% block page_heading %}库存台账{% endblock %}
+{% block page_subtitle %}同一产品只有一份库存，这里是所有出入库动作汇总后的当前余额。{% endblock %}
+
+{% block content %}
+<section class="page-card">
+    <div class="section-header">
+        <div class="section-title">
+            <h2>当前库存</h2>
+            <p>先查余额，再看流水，避免直接改数字后找不到原因。</p>
+        </div>
+        <div class="toolbar">
+            <a class="button" href="/stock/in">增库存</a>
+            <a class="button-secondary" href="/stock/out">减库存</a>
+            <a class="button-secondary" href="/stock/movements">库存流水</a>
+        </div>
+    </div>
+    <div class="panel-body">
+        {% if balances %}
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>产品编码</th>
+                    <th>产品名称</th>
+                    <th>当前库存</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for balance in balances %}
+                {% set product = product_map.get(balance.product_id) %}
+                <tr>
+                    <td>{{ product.product_code if product else "N/A" }}</td>
+                    <td>{{ product.product_name if product else "N/A" }}</td>
+                    <td><strong>{{ balance.qty }}</strong></td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <div class="empty-hint">还没有库存记录，先通过“增库存”或“入库单”创建第一条库存。</div>
+        {% endif %}
+    </div>
+</section>
+{% endblock %}

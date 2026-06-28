@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+
+{% block title %}产品资料 - Simple IMS{% endblock %}
+{% block page_heading %}产品资料{% endblock %}
+{% block page_subtitle %}统一产品主数据，后续订单、入库、出库和 AI 识别都基于这里。{% endblock %}
+
+{% block content %}
+<section class="page-card">
+    <div class="section-header">
+        <div class="section-title">
+            <h2>产品列表</h2>
+            <p>建议把名称、规格和单位维护稳定，方便后面 OCR/AI 自动匹配。</p>
+        </div>
+        <div class="toolbar">
+            <a class="button" href="/products/new">新建产品</a>
+        </div>
+    </div>
+    <div class="panel-body">
+        {% if error %}
+        <div class="error-banner">{{ error }}</div>
+        {% endif %}
+        {% if products %}
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>产品编码</th>
+                    <th>产品名称</th>
+                    <th>规格</th>
+                    <th>单位</th>
+                    <th>单价</th>
+                    <th>基材类别</th>
+                    <th>单面双面</th>
+                    <th>状态</th>
+                    <th>操作</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for product in products %}
+                <tr>
+                    <td>{{ product.product_code }}</td>
+                    <td>{{ product.product_name }}</td>
+                    <td>{{ product.spec or "-" }}</td>
+                    <td>{{ product.unit or "-" }}</td>
+                    <td>{{ "%.2f"|format(product.unit_price or 0) }}</td>
+                    <td>{{ product.substrate_category or "-" }}</td>
+                    <td>{{ product.surface_type or "-" }}</td>
+                    <td>
+                        <span class="badge {{ 'badge-good' if product.enabled else 'badge-bad' }}">
+                            {{ "启用" if product.enabled else "停用" }}
+                        </span>
+                    </td>
+                    <td class="cell-actions">
+                        <a class="button-secondary" href="/products/{{ product.id }}">详情</a>
+                        <a class="button-secondary" href="/products/{{ product.id }}/edit">编辑</a>
+                        <form class="inline-form" method="post" action="/products/{{ product.id }}/delete" onsubmit="return confirm('确认删除产品「{{ product.product_name }}」吗？删除后不可恢复。');">
+                            <button type="submit" class="button-secondary button-danger">删除</button>
+                        </form>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <div class="empty-hint">还没有产品，先创建一条产品资料开始。</div>
+        {% endif %}
+    </div>
+</section>
+{% endblock %}

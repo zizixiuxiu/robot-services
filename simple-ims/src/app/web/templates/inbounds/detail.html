@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+
+{% block title %}{{ inbound.inbound_no }} - Simple IMS{% endblock %}
+{% block page_heading %}入库单详情{% endblock %}
+{% block page_subtitle %}这里查看生产完成后入库的结果和对应明细。{% endblock %}
+
+{% block content %}
+<div class="stack">
+    <section class="page-card">
+        <div class="section-header">
+            <div class="section-title">
+                <h2>{{ inbound.inbound_no }}</h2>
+                <p>关联订单：{{ inbound.related_order.order_no if inbound.related_order else "无" }}</p>
+            </div>
+            <div class="toolbar">
+                <a class="button" href="/inbounds/{{ inbound.id }}/print" target="_blank">打印入库单</a>
+                <a class="button-secondary" href="/inbounds/">返回列表</a>
+            </div>
+        </div>
+        <div class="panel-body">
+            <div class="info-grid">
+                <div class="label">入库单号</div><div>{{ inbound.inbound_no }}</div>
+                <div class="label">入库日期</div><div>{{ inbound.inbound_date }}</div>
+                <div class="label">关联订单</div><div>{{ inbound.related_order.order_no if inbound.related_order else "-" }}</div>
+                <div class="label">备注</div><div>{{ inbound.remark or "-" }}</div>
+                <div class="label">创建时间</div><div>{{ inbound.created_at|localtime }}</div>
+            </div>
+        </div>
+    </section>
+
+    <section class="page-card">
+        <div class="section-header">
+            <div class="section-title">
+                <h2>入库明细</h2>
+                <p>保存后这些数量已经计入共享库存。</p>
+            </div>
+        </div>
+        <div class="panel-body">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>产品</th>
+                        <th>规格</th>
+                        <th>单位</th>
+                        <th>数量</th>
+                        <th>备注</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for line in inbound.lines %}
+                    <tr>
+                        <td>{{ line.product.product_name }}</td>
+                        <td>{{ line.product.spec or "-" }}</td>
+                        <td>{{ line.product.unit or "-" }}</td>
+                        <td>{{ line.qty }}</td>
+                        <td>{{ line.remark or "-" }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </section>
+</div>
+{% endblock %}

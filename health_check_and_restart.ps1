@@ -1,5 +1,7 @@
-# 机器人服务健康检查与端口映射修复脚本
-# 适用于 Docker Desktop + WSL2 环境，解决容器 healthy 但主机端口不可访问的问题
+# Health check and targeted repair for robot services.
+# New entry: Docker services live under D:\Services\robot-services.
+# Exception: OrderFlowMonitor intentionally uses the legacy D:\1 entry.
+$ErrorActionPreference = "SilentlyContinue"
 
 $services = @(
     @{ Name = "hardware-summary"; Port = 8001; ComposeDir = "D:\Services\robot-services\hardware-summary\deploy\docker" },
@@ -7,52 +9,57 @@ $services = @(
     @{ Name = "dealer-sales";      Port = 8003; ComposeDir = "D:\Services\robot-services\may-sales\deploy\docker" },
     @{ Name = "csv-board";         Port = 8004; ComposeDir = "D:\Services\robot-services\csv-board\deploy\docker" },
     @{ Name = "pvc-classify";      Port = 8005; ComposeDir = "D:\Services\robot-services\pvc-classify\deploy\docker" },
-    @{ Name = "workshop-order";    Port = 8006; ComposeDir = "D:\Services\robot-services\workshop-order\deploy\docker" }
+    @{ Name = "workshop-order";    Port = 8006; ComposeDir = "D:\Services\robot-services\workshop-order\deploy\docker" },
+    @{ Name = "simple-ims";        Port = 8090; ComposeDir = "D:\Services\robot-services\simple-ims\deploy\docker" }
 )
 
-$fixed = @()
-$failed = @()
+function Restart-DockerCompose($composeDir, $name) {
+    Push-Location $composeDir
+    try {
+        docker compose -f docker-compose.yml up -d 2>&1 | Out-Null
+        Write-Host "[FIXED] $name started" -ForegroundColor Green
+    } catch {
+        Write-Error "[ERROR] $name repair failed: $($_.Exception.Message)"
+    } finally {
+        Pop-Location
+    }
+}
 
 foreach ($svc in $services) {
-    $port = $svc.Port
-    $url = "http://localhost:$port/health"
+    $url = "http://127.0.0.1:$($svc.Port)/health"
     try {
         $resp = Invoke-WebRequest -Uri $url -TimeoutSec 5 -UseBasicParsing
         if ($resp.StatusCode -eq 200) {
-            Write-Host "[OK] $($svc.Name) :$port 正常"
+            Write-Host "[OK] $($svc.Name) :$($svc.Port) healthy"
             continue
         }
-    }
-    catch {
-        Write-Warning "[FAIL] $($svc.Name) :$port 无法访问，准备重启容器..."
+    } catch {
+        Write-Warning "[FAIL] $($svc.Name) :$($svc.Port) unavailable; restarting container..."
     }
 
-    try {
-        Set-Location $svc.ComposeDir
-        & docker compose -f docker-compose.yml down 2>&1 | Out-Null
-        Start-Sleep -Seconds 2
-        & docker compose -f docker-compose.yml up -d 2>&1 | Out-Null
-        Start-Sleep -Seconds 5
-
-        # 再次检查
-        $resp2 = Invoke-WebRequest -Uri $url -TimeoutSec 5 -UseBasicParsing
-        if ($resp2.StatusCode -eq 200) {
-            Write-Host "[FIXED] $($svc.Name) :$port 已恢复" -ForegroundColor Green
-            $fixed += $svc.Name
-        }
-        else {
-            throw "重启后仍无法访问"
-        }
-    }
-    catch {
-        Write-Error "[ERROR] $($svc.Name) :$port 修复失败: $_"
-        $failed += $svc.Name
-    }
+    Restart-DockerCompose $svc.ComposeDir $svc.Name
 }
 
-if ($fixed.Count -gt 0) {
-    Write-Host "`n已修复服务: $($fixed -join ', ')" -ForegroundColor Green
+$gatewayRunning = $false
+$gatewayState = docker inspect --format "{{.State.Running}}" feishu-ws-gateway 2>$null
+if ($gatewayState -eq "true") {
+    $gatewayRunning = $true
 }
-if ($failed.Count -gt 0) {
-    Write-Host "`n修复失败服务: $($failed -join ', ')" -ForegroundColor Red
+
+if ($gatewayRunning) {
+    Write-Host "[OK] feishu-ws-gateway container running"
+} else {
+    Write-Warning "[FAIL] feishu-ws-gateway container is not running; restarting..."
+    Restart-DockerCompose "D:\Services\robot-services\feishu-ws-gateway\deploy\docker" "feishu-ws-gateway"
+}
+
+$orderFlow = Get-WmiObject Win32_Process -Filter "Name='python.exe'" | Where-Object {
+    $_.CommandLine -match "C:\\Users\\Administrator\\Documents\\Codex\\2026-05-28\\sqlserver\\monitor_refresh_order_flow.py"
+} | Select-Object -First 1
+
+if ($orderFlow) {
+    Write-Host "[OK] OrderFlowMonitor legacy entry running PID=$($orderFlow.ProcessId)"
+} else {
+    Write-Warning "[FAIL] OrderFlowMonitor is not running; starting legacy entry..."
+    & "C:\Windows\System32\wscript.exe" "D:\1\start_order_flow_monitor.vbs"
 }

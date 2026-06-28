@@ -1,0 +1,536 @@
+{% extends "base.html" %}
+
+{% set product_catalog = [] %}
+{% for product in products %}
+    {% set _ = product_catalog.append({
+        "id": product.id,
+        "product_code": (product.product_code or ""),
+        "product_name": (product.product_name or ""),
+        "label": ((product.product_code or "") ~ " - " ~ (product.product_name or "")),
+        "spec": (product.spec or ""),
+        "unit": (product.unit or ""),
+        "unit_price": ((product.unit_price or 0)|string),
+        "substrate_category": (product.substrate_category or ""),
+        "surface_type": (product.surface_type or ""),
+        "remark": (product.remark or ""),
+        "search": ((product.product_code or "") ~ " " ~ (product.product_name or "") ~ " " ~ (product.spec or "") ~ " " ~ (product.unit or "") ~ " " ~ (product.substrate_category or "") ~ " " ~ (product.surface_type or "") ~ " " ~ (product.remark or ""))
+    }) %}
+{% endfor %}
+
+{% block title %}{{ "编辑订单" if order else "新建订单" }} - 平贴管理系统{% endblock %}
+{% block page_heading %}{{ "编辑订单" if order else "新建订单" }}{% endblock %}
+{% block page_subtitle %}先录入订单需求，再通过入库单和出库单推进状态。若明细里的产品不存在，可在当前行补齐产品资料并快速创建。{% endblock %}
+
+{% block content %}
+<style>
+    .order-lines-scroll {
+        width: 100%;
+        overflow-x: auto;
+        padding-bottom: 2px;
+    }
+
+    #lines-table {
+        min-width: 1180px;
+        table-layout: fixed;
+    }
+
+    #lines-table th,
+    #lines-table td {
+        padding-left: 10px;
+        padding-right: 10px;
+    }
+
+    #lines-table .col-product { width: 18%; }
+    #lines-table .col-spec { width: 11%; }
+    #lines-table .col-unit { width: 5%; }
+    #lines-table .col-substrate { width: 11%; }
+    #lines-table .col-surface { width: 6%; }
+    #lines-table .col-remark { width: 13%; }
+    #lines-table .col-qty { width: 7%; }
+    #lines-table .col-price { width: 8%; }
+    #lines-table .col-total { width: 8.5%; }
+    #lines-table .col-action { width: 8%; }
+
+    #lines-table th.col-action,
+    #lines-table td.col-action {
+        white-space: nowrap;
+    }
+
+    #lines-table input,
+    #lines-table select {
+        min-width: 0;
+        padding-left: 8px;
+        padding-right: 8px;
+    }
+
+    #lines-table input[name="line_qty"] {
+        max-width: 76px;
+        text-align: center;
+    }
+
+    #lines-table input[name="line_unit_price"] {
+        max-width: 92px;
+        text-align: center;
+    }
+
+    #lines-table input[name="line_total_price"] {
+        max-width: none;
+        min-width: 88px;
+        padding-left: 4px;
+        padding-right: 4px;
+        background: #eef4f8;
+        color: #486276;
+        text-align: center;
+    }
+
+    #lines-table input.product-unit-display[readonly] {
+        background: #f3f5f8;
+        color: #486276;
+        text-align: center;
+        cursor: default;
+    }
+
+    .product-remark-input {
+        min-width: 0;
+    }
+</style>
+
+<form method="post" action="{{ '/orders/' + order.id|string + '/edit' if order else '/orders/' }}" id="order-form">
+    <div class="stack">
+        <section class="page-card">
+            <div class="section-header">
+                <div class="section-title">
+                    <h2>订单头</h2>
+                    <p>这里维护订单日期、交期、客户信息和整单备注。</p>
+                </div>
+            </div>
+            <div class="panel-body">
+                {% if error %}
+                <div class="error-banner">{{ error }}</div>
+                {% endif %}
+                <div class="form-grid">
+                    <div class="form-field">
+                        <label for="order_date">订单日期</label>
+                        <input type="date" id="order_date" name="order_date" value="{{ order.order_date if order else (form.order_date if form else '') }}" required>
+                    </div>
+                    <div class="form-field">
+                        <label for="due_date">交期</label>
+                        <input type="date" id="due_date" name="due_date" value="{{ order.due_date if order else (form.due_date if form else '') }}">
+                    </div>
+                    <div class="form-field">
+                        <label for="owner_user_id">客户信息</label>
+                        <select name="owner_user_id" id="owner_user_id" required>
+                            {% for owner in owners %}
+                            <option value="{{ owner.id }}" {{ 'selected' if (order and order.owner_user_id == owner.id) or (form and form.owner_user_id == owner.id) else '' }}>
+                                {{ owner.name }}
+                            </option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="form-field full">
+                        <label for="remark">备注</label>
+                        <textarea id="remark" name="remark">{{ order.remark if order else (form.remark if form else '') }}</textarea>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section class="page-card">
+            <div class="section-header">
+                <div class="section-title">
+                    <h2>订单明细</h2>
+                    <p>产品、规格、单位、备注都允许修改。若与现有产品不完全一致，保存时会提示是否快速新建产品并立即使用。</p>
+                </div>
+                <div class="toolbar">
+                    <button type="button" onclick="addLine()">新增明细行</button>
+                </div>
+            </div>
+            <div class="panel-body">
+                <div class="order-lines-scroll">
+                <table class="data-table" id="lines-table">
+                    <colgroup>
+                        <col class="col-product">
+                        <col class="col-spec">
+                        <col class="col-unit">
+                        <col class="col-substrate">
+                        <col class="col-surface">
+                        <col class="col-remark">
+                        <col class="col-qty">
+                        <col class="col-price">
+                        <col class="col-total">
+                        <col class="col-action">
+                    </colgroup>
+                    <thead>
+                        <tr>
+                            <th class="col-product">产品</th>
+                            <th class="col-spec">规格</th>
+                            <th class="col-unit">单位</th>
+                            <th class="col-substrate">基材类别</th>
+                            <th class="col-surface">单面双面</th>
+                            <th class="col-remark">备注</th>
+                            <th class="col-qty">数量</th>
+                            <th class="col-price">单价</th>
+                            <th class="col-total">总价</th>
+                            <th class="col-action">操作</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% if order %}
+                            {% for line in order.lines %}
+                            <tr>
+                                <td class="col-product">
+                                    <input type="text" class="product-picker-input" list="product-options" value="{{ (line.product.product_code or '') ~ ' - ' ~ (line.product.product_name or '') }}" placeholder="输入编码或名称">
+                                    <input type="hidden" name="line_product_id" value="{{ line.product_id }}" required>
+                                </td>
+                                <td class="col-spec"><input type="text" class="product-spec-display" value="{{ line.product.spec or '' }}" placeholder="输入规格" required></td>
+                                <td class="col-unit"><input type="text" class="product-unit-display" value="张" readonly tabindex="-1"></td>
+                                <td class="col-substrate">
+                                    <input type="text" name="line_substrate_category" class="substrate-category-select" value="{{ line.substrate_category or '' }}" placeholder="输入基材" required>
+                                </td>
+                                <td class="col-surface">
+                                    <select name="line_surface_type" class="surface-type-select" required>
+                                        <option value="" {{ 'selected' if not line.surface_type else '' }}>请选择</option>
+                                        <option value="单面" {{ 'selected' if line.surface_type == '单面' else '' }}>单面</option>
+                                        <option value="双面" {{ 'selected' if line.surface_type == '双面' else '' }}>双面</option>
+                                    </select>
+                                </td>
+                                <td class="col-remark"><input type="text" class="product-remark-input" name="line_remark" value="{{ line.remark or line.product.remark or '' }}" placeholder="备注" required></td>
+                                <td class="col-qty"><input type="number" name="line_qty" value="{{ line.qty }}" min="1" required></td>
+                                <td class="col-price"><input type="number" name="line_unit_price" value="{{ '%.2f'|format(line.unit_price or 0) }}" min="0" step="0.01" required></td>
+                                <td class="col-total"><input type="number" name="line_total_price" value="{{ '%.2f'|format(line.total_price or 0) }}" readonly tabindex="-1"></td>
+                                <td class="col-action"><button type="button" class="button-secondary" onclick="this.closest('tr').remove()">删除</button></td>
+                            </tr>
+                            {% endfor %}
+                        {% else %}
+                            <tr>
+                                <td class="col-product">
+                                    <input type="text" class="product-picker-input" list="product-options" placeholder="输入编码或名称">
+                                    <input type="hidden" name="line_product_id" value="" required>
+                                </td>
+                                <td class="col-spec"><input type="text" class="product-spec-display" value="" placeholder="输入规格" required></td>
+                                <td class="col-unit"><input type="text" class="product-unit-display" value="张" readonly tabindex="-1"></td>
+                                <td class="col-substrate">
+                                    <input type="text" name="line_substrate_category" class="substrate-category-select" value="" placeholder="输入基材" required>
+                                </td>
+                                <td class="col-surface">
+                                    <select name="line_surface_type" class="surface-type-select" required>
+                                        <option value="" selected>请选择</option>
+                                        <option value="单面">单面</option>
+                                        <option value="双面">双面</option>
+                                    </select>
+                                </td>
+                                <td class="col-remark"><input type="text" class="product-remark-input" name="line_remark" value="" placeholder="备注" required></td>
+                                <td class="col-qty"><input type="number" name="line_qty" value="1" min="1" required></td>
+                                <td class="col-price"><input type="number" name="line_unit_price" value="0.00" min="0" step="0.01" required></td>
+                                <td class="col-total"><input type="number" name="line_total_price" value="0.00" readonly tabindex="-1"></td>
+                                <td class="col-action"><button type="button" class="button-secondary" onclick="this.closest('tr').remove()">删除</button></td>
+                            </tr>
+                        {% endif %}
+                    </tbody>
+                </table>
+                </div>
+                <datalist id="product-options">
+                    {% for item in product_catalog %}
+                    <option value="{{ item.label }}"></option>
+                    {% endfor %}
+                </datalist>
+                <div class="toolbar" style="margin-top: 20px;">
+                    <button type="submit">保存订单</button>
+                    <a class="button-secondary" href="/orders/">返回列表</a>
+                </div>
+            </div>
+        </section>
+    </div>
+</form>
+
+<script>
+const productCatalog = {{ product_catalog | tojson }};
+
+function normalizeValue(value) {
+    return (value || '').trim().toLowerCase();
+}
+
+function getRowFields(row) {
+    return {
+        input: row.querySelector('.product-picker-input'),
+        hidden: row.querySelector('input[name="line_product_id"]'),
+        spec: row.querySelector('.product-spec-display'),
+        unit: row.querySelector('.product-unit-display'),
+        substrate: row.querySelector('.substrate-category-select'),
+        surface: row.querySelector('.surface-type-select'),
+        remark: row.querySelector('.product-remark-input'),
+        qty: row.querySelector('input[name="line_qty"]'),
+        unitPrice: row.querySelector('input[name="line_unit_price"]'),
+        totalPrice: row.querySelector('input[name="line_total_price"]'),
+    };
+}
+
+function formatMoney(value) {
+    const numberValue = Number.parseFloat(value);
+    if (!Number.isFinite(numberValue) || numberValue < 0) {
+        return '0.00';
+    }
+    return numberValue.toFixed(2);
+}
+
+function updateLineTotal(row) {
+    const { qty, unitPrice, totalPrice } = getRowFields(row);
+    const qtyValue = Number.parseFloat(qty.value) || 0;
+    const unitPriceValue = Number.parseFloat(unitPrice.value) || 0;
+    totalPrice.value = formatMoney(qtyValue * unitPriceValue);
+}
+
+function findProductByInputOnly(inputValue) {
+    const normalized = normalizeValue(inputValue);
+    if (!normalized) return null;
+    return productCatalog.find((item) =>
+        normalizeValue(item.label) === normalized ||
+        normalizeValue(item.product_name) === normalized ||
+        normalizeValue(item.product_code) === normalized
+    ) || null;
+}
+
+function findExactProduct(inputValue, specValue, remarkValue) {
+    const inputOnly = findProductByInputOnly(inputValue);
+    if (!inputOnly) return null;
+    if (normalizeValue(inputOnly.spec) !== normalizeValue(specValue)) return null;
+    if (normalizeValue(inputOnly.remark) !== normalizeValue(remarkValue)) return null;
+    return inputOnly;
+}
+
+function setMatchedProduct(row, product, normalizeInput = true) {
+    const { input, hidden, spec, unit, substrate, surface, remark, unitPrice } = getRowFields(row);
+    hidden.value = product.id;
+    if (normalizeInput) {
+        input.value = product.label;
+    }
+    spec.value = product.spec || '';
+    unit.value = '张';
+    substrate.value = product.substrate_category || '';
+    surface.value = product.surface_type || '';
+    remark.value = product.remark || '';
+    unitPrice.value = formatMoney(product.unit_price || 0);
+    updateLineTotal(row);
+    input.setCustomValidity('');
+}
+
+function clearMatchedProduct(row) {
+    const { hidden } = getRowFields(row);
+    hidden.value = '';
+}
+
+function evaluateRow(row, normalizeInput = false) {
+    const { input, spec, remark, qty, unitPrice } = getRowFields(row);
+    const rawInput = (input.value || '').trim();
+    const rawSpec = (spec.value || '').trim();
+    const rawRemark = (remark.value || '').trim();
+
+    if (!rawInput) {
+        clearMatchedProduct(row);
+        return;
+    }
+
+    const exact = findExactProduct(rawInput, rawSpec, rawRemark);
+    if (exact) {
+        setMatchedProduct(row, exact, normalizeInput);
+        return;
+    }
+
+    const inputOnly = findProductByInputOnly(rawInput);
+    if (inputOnly && !rawSpec && !rawRemark) {
+        setMatchedProduct(row, inputOnly, normalizeInput);
+        return;
+    }
+
+    clearMatchedProduct(row);
+}
+
+function bindRow(row) {
+    const { input, spec, unit, remark, qty, unitPrice } = getRowFields(row);
+    input.addEventListener('change', () => evaluateRow(row, true));
+    input.addEventListener('blur', () => evaluateRow(row, true));
+    input.addEventListener('input', () => evaluateRow(row, false));
+    spec.addEventListener('change', () => evaluateRow(row, false));
+    spec.addEventListener('input', () => evaluateRow(row, false));
+    remark.addEventListener('change', () => evaluateRow(row, false));
+    remark.addEventListener('input', () => evaluateRow(row, false));
+    qty.addEventListener('input', () => updateLineTotal(row));
+    unitPrice.addEventListener('input', () => updateLineTotal(row));
+    unitPrice.addEventListener('change', () => {
+        unitPrice.value = formatMoney(unitPrice.value);
+        updateLineTotal(row);
+    });
+}
+
+function addLine() {
+    const tbody = document.querySelector('#lines-table tbody');
+    const row = document.createElement('tr');
+    row.innerHTML = `
+        <td class="col-product">
+            <input type="text" class="product-picker-input" list="product-options" placeholder="输入编码或名称">
+            <input type="hidden" name="line_product_id" value="" required>
+        </td>
+        <td class="col-spec"><input type="text" class="product-spec-display" value="" placeholder="输入规格" required></td>
+        <td class="col-unit"><input type="text" class="product-unit-display" value="张" readonly tabindex="-1"></td>
+        <td class="col-substrate">
+            <input type="text" name="line_substrate_category" class="substrate-category-select" value="" placeholder="输入基材" required>
+        </td>
+        <td class="col-surface">
+            <select name="line_surface_type" class="surface-type-select" required>
+                <option value="" selected>请选择</option>
+                <option value="单面">单面</option>
+                <option value="双面">双面</option>
+            </select>
+        </td>
+        <td class="col-remark"><input type="text" class="product-remark-input" name="line_remark" value="" placeholder="备注" required></td>
+        <td class="col-qty"><input type="number" name="line_qty" value="1" min="1" required></td>
+        <td class="col-price"><input type="number" name="line_unit_price" value="0.00" min="0" step="0.01" required></td>
+        <td class="col-total"><input type="number" name="line_total_price" value="0.00" readonly tabindex="-1"></td>
+        <td class="col-action"><button type="button" class="button-secondary" onclick="this.closest('tr').remove()">删除</button></td>
+    `;
+    tbody.appendChild(row);
+    bindRow(row);
+    updateLineTotal(row);
+}
+
+function getQuickCreateName(rawInput) {
+    const inputOnly = findProductByInputOnly(rawInput);
+    return inputOnly ? inputOnly.product_name : rawInput.trim();
+}
+
+async function quickCreateProduct(row) {
+    const { input, spec, unit, substrate, surface, remark } = getRowFields(row);
+    const rawInput = (input.value || '').trim();
+    const rawSpec = (spec.value || '').trim();
+    const rawUnit = (unit.value || '').trim();
+    const rawSubstrate = (substrate.value || '').trim();
+    const rawSurface = (surface.value || '').trim();
+    const rawRemark = (remark.value || '').trim();
+
+    if (!rawInput) {
+        input.focus();
+        throw new Error('请输入产品名称后再保存订单。');
+    }
+    if (!rawSpec) {
+        spec.focus();
+        throw new Error('请输入规格后再保存订单。');
+    }
+
+    const productName = getQuickCreateName(rawInput);
+    const shouldCreate = window.confirm(`产品“${productName} / ${rawSpec}”不存在，是否立即新建并使用？`);
+    if (!shouldCreate) {
+        input.focus();
+        throw new Error('已取消快速创建，请先选择已有产品或继续完善新产品信息。');
+    }
+
+    const { unitPrice } = getRowFields(row);
+    const response = await fetch('/products/quick-create', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            product_name: productName,
+            spec: rawSpec,
+            unit: rawUnit,
+            unit_price: unitPrice.value || '0',
+            substrate_category: rawSubstrate,
+            surface_type: rawSurface,
+            remark: rawRemark
+        })
+    });
+
+    const result = await response.json();
+    if (!response.ok || !result.ok) {
+        throw new Error(result.message || '快速创建产品失败，请稍后重试。');
+    }
+
+    const product = result.product;
+    const productItem = {
+        id: product.id,
+        product_code: product.product_code,
+        product_name: product.product_name,
+        label: product.label,
+        spec: product.spec || '',
+        unit: product.unit || '',
+        unit_price: product.unit_price || '0',
+        substrate_category: product.substrate_category || '',
+        surface_type: product.surface_type || '',
+        remark: rawRemark,
+        search: `${product.product_code || ''} ${product.product_name || ''} ${product.spec || ''} ${product.unit || ''} ${product.substrate_category || ''} ${product.surface_type || ''} ${rawRemark || ''}`.trim()
+    };
+
+    const existingIndex = productCatalog.findIndex((item) => item.id === product.id);
+    if (existingIndex >= 0) {
+        productCatalog[existingIndex] = productItem;
+    } else {
+        productCatalog.push(productItem);
+        const datalist = document.getElementById('product-options');
+        const option = document.createElement('option');
+        option.value = product.label;
+        datalist.appendChild(option);
+    }
+
+    setMatchedProduct(row, productItem, true);
+}
+
+async function ensureProductsReadyBeforeSubmit() {
+    const rows = Array.from(document.querySelectorAll('#lines-table tbody tr'));
+    for (const row of rows) {
+        const { input, hidden, spec, unit, remark } = getRowFields(row);
+        const rawInput = (input.value || '').trim();
+        const rawSpec = (spec.value || '').trim();
+        const rawUnit = (unit.value || '').trim();
+        const rawRemark = (remark.value || '').trim();
+
+        if (!rawInput) {
+            continue;
+        }
+
+        const exact = findExactProduct(rawInput, rawSpec, rawUnit, rawRemark);
+        if (exact) {
+            setMatchedProduct(row, exact, true);
+            continue;
+        }
+
+        if (!hidden.value) {
+            await quickCreateProduct(row);
+        }
+    }
+}
+
+document.querySelectorAll('#lines-table tbody tr').forEach((row) => {
+    bindRow(row);
+    evaluateRow(row, true);
+    updateLineTotal(row);
+});
+
+function validateLines() {
+    const rows = Array.from(document.querySelectorAll('#lines-table tbody tr'));
+    for (const row of rows) {
+        const fields = getRowFields(row);
+        const rawInput = (fields.input.value || '').trim();
+        if (!rawInput) {
+            continue;
+        }
+        const requiredInputs = row.querySelectorAll('input[required]:not([type="hidden"]), select[required]');
+        for (const input of requiredInputs) {
+            if (!input.value.trim()) {
+                input.focus();
+                throw new Error('请填写完整所有订单明细字段后再保存。');
+            }
+        }
+    }
+}
+
+document.getElementById('order-form').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    try {
+        validateLines();
+        await ensureProductsReadyBeforeSubmit();
+        form.submit();
+    } catch (error) {
+        window.alert(error.message || '订单保存失败，请检查明细。');
+    }
+});
+</script>
+{% endblock %}

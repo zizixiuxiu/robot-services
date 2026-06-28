@@ -1,0 +1,192 @@
+{% extends "base.html" %}
+
+{% set product_catalog = [] %}
+{% for product in products %}
+    {% set _ = product_catalog.append({
+        "id": product.id,
+        "label": ((product.product_code or "") ~ " - " ~ (product.product_name or "") ~ (((" / " ~ product.spec) if product.spec else ""))),
+        "search": ((product.product_code or "") ~ " " ~ (product.product_name or "") ~ " " ~ (product.spec or "") ~ " " ~ (product.unit or ""))
+    }) %}
+{% endfor %}
+{% set order_catalog = [] %}
+{% for order in orders %}
+    {% set line_items = [] %}
+    {% for line in order.lines %}
+        {% set _ = line_items.append({
+            "product_id": line.product_id,
+            "label": ((line.product.product_code or "") ~ " - " ~ (line.product.product_name or "") ~ (((" / " ~ line.product.spec) if line.product.spec else ""))),
+            "qty": line.qty,
+            "inbound_qty": line.inbound_qty,
+            "remaining_inbound_qty": (line.qty - line.inbound_qty),
+            "remark": line.remark or ""
+        }) %}
+    {% endfor %}
+    {% set _ = order_catalog.append({
+        "id": order.id,
+        "label": (order.order_no ~ " / " ~ order.owner.name),
+        "lines": line_items
+    }) %}
+{% endfor %}
+
+{% block title %}新建入库单 - Simple IMS{% endblock %}
+{% block page_heading %}新建入库单{% endblock %}
+{% block page_subtitle %}选中订单后，明细会自动同步，数量默认带最大可入库值；如需分批入库，你再改小即可。{% endblock %}
+
+{% block content %}
+<form method="post" action="/inbounds/">
+    <div class="stack">
+        <section class="page-card">
+            <div class="section-header">
+                <div class="section-title">
+                    <h2>入库单头</h2>
+                    <p>先选日期和草稿订单，明细会自动按订单同步。</p>
+                </div>
+            </div>
+            <div class="panel-body">
+                {% if error %}
+                <div class="error-banner">{{ error }}</div>
+                {% endif %}
+                <div class="form-grid">
+                    <div class="form-field">
+                        <label for="inbound_date">入库日期</label>
+                        <input type="date" id="inbound_date" name="inbound_date" value="{{ inbound.inbound_date if inbound else (form.inbound_date if form else '') }}" required>
+                    </div>
+                    <div class="form-field">
+                        <label for="related_order_id">关联草稿订单</label>
+                        <select id="related_order_id" name="related_order_id">
+                            <option value="">不关联订单</option>
+                            {% for item in order_catalog %}
+                            <option value="{{ item.id }}" {{ 'selected' if form and form.related_order_id == item.id else '' }}>
+                                {{ item.label }}
+                            </option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="form-field full">
+                        <label for="remark">备注</label>
+                        <textarea id="remark" name="remark">{{ inbound.remark if inbound else (form.remark if form else '') }}</textarea>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section class="page-card">
+            <div class="section-header">
+                <div class="section-title">
+                    <h2>入库明细</h2>
+                    <p>选中订单后自动同步产品和数量，默认带出每行剩余可入库数量，你可以改小做分批入库。</p>
+                </div>
+                <div class="toolbar" id="manual-line-toolbar">
+                    <button type="button" onclick="addManualInboundLine()">新增明细行</button>
+                </div>
+            </div>
+            <div class="panel-body">
+                <table class="data-table" id="lines-table">
+                    <thead>
+                        <tr>
+                            <th>产品</th>
+                            <th>数量</th>
+                            <th>备注</th>
+                            <th>操作</th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+                <datalist id="product-options">
+                    {% for item in product_catalog %}
+                    <option value="{{ item.label }}"></option>
+                    {% endfor %}
+                </datalist>
+                <div class="toolbar" style="margin-top: 20px;">
+                    <button type="submit">保存入库单</button>
+                    <a class="button-secondary" href="/inbounds/">返回列表</a>
+                </div>
+            </div>
+        </section>
+    </div>
+</form>
+
+<script>
+const productCatalog = {{ product_catalog | tojson }};
+const inboundOrderCatalog = {{ order_catalog | tojson }};
+
+function resolveProduct(inputValue) {
+    const normalized = (inputValue || "").trim().toLowerCase();
+    if (!normalized) return null;
+    const exact = productCatalog.find((item) => item.label.toLowerCase() === normalized);
+    if (exact) return exact;
+    return productCatalog.find((item) => item.search.toLowerCase().includes(normalized));
+}
+
+function syncProductPicker(row) {
+    const input = row.querySelector('.product-picker-input');
+    const hidden = row.querySelector('input[name="line_product_id"]');
+    const match = resolveProduct(input.value);
+    if (match) {
+        hidden.value = match.id;
+        input.value = match.label;
+        input.setCustomValidity('');
+    } else {
+        hidden.value = '';
+        input.setCustomValidity('请选择有效产品');
+    }
+}
+
+function bindProductPicker(row) {
+    const input = row.querySelector('.product-picker-input');
+    input.addEventListener('change', () => syncProductPicker(row));
+    input.addEventListener('blur', () => syncProductPicker(row));
+}
+
+function createManualInboundRow() {
+    const row = document.createElement('tr');
+    row.innerHTML = `
+        <td>
+            <input type="text" class="product-picker-input" list="product-options" placeholder="输入编码、名称或规格">
+            <input type="hidden" name="line_product_id" value="" required>
+        </td>
+        <td><input type="number" name="line_qty" value="1" min="1" required></td>
+        <td><input type="text" name="line_remark" value=""></td>
+        <td><button type="button" class="button-secondary" onclick="this.closest('tr').remove()">删除</button></td>
+    `;
+    bindProductPicker(row);
+    return row;
+}
+
+function addManualInboundLine() {
+    const tbody = document.querySelector('#lines-table tbody');
+    tbody.appendChild(createManualInboundRow());
+}
+
+function renderInboundLinesForOrder(orderId) {
+    const tbody = document.querySelector('#lines-table tbody');
+    const toolbar = document.getElementById('manual-line-toolbar');
+    tbody.innerHTML = '';
+    const selectedOrder = inboundOrderCatalog.find((item) => String(item.id) === String(orderId));
+    if (!selectedOrder) {
+        toolbar.style.display = '';
+        tbody.appendChild(createManualInboundRow());
+        return;
+    }
+
+    toolbar.style.display = 'none';
+    selectedOrder.lines.forEach((line) => {
+        const row = document.createElement('tr');
+        row.innerHTML = `
+            <td>
+                <input type="text" value="${line.label}" readonly>
+                <input type="hidden" name="line_product_id" value="${line.product_id}" required>
+            </td>
+            <td><input type="number" name="line_qty" value="${line.remaining_inbound_qty}" min="0" max="${line.remaining_inbound_qty}" required></td>
+            <td><input type="text" name="line_remark" value="${line.remark || ''}"></td>
+            <td><span style="color:#6b7280;">剩余 ${line.remaining_inbound_qty}</span></td>
+        `;
+        tbody.appendChild(row);
+    });
+}
+
+const inboundOrderSelect = document.getElementById('related_order_id');
+inboundOrderSelect.addEventListener('change', (event) => renderInboundLinesForOrder(event.target.value));
+renderInboundLinesForOrder(inboundOrderSelect.value);
+</script>
+{% endblock %}

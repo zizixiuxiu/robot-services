@@ -1,0 +1,245 @@
+{% extends "base.html" %}
+
+{% set product_catalog = [] %}
+{% for product in products %}
+    {% set _ = product_catalog.append({
+        "id": product.id,
+        "label": ((product.product_name or "") ~ (((" / " ~ product.spec) if product.spec else ""))),
+        "search": ((product.product_code or "") ~ " " ~ (product.product_name or "") ~ " " ~ (product.spec or "") ~ " " ~ (product.unit or ""))
+    }) %}
+{% endfor %}
+
+{% set order_catalog = [] %}
+{% for order in orders %}
+    {% set line_items = [] %}
+    {% for line in order.lines %}
+        {% set _ = line_items.append({
+            "product_id": line.product_id,
+            "label": ((line.product.product_name or "") ~ (((" / " ~ line.product.spec) if line.product.spec else ""))),
+            "qty": line.qty,
+            "inbound_qty": line.inbound_qty,
+            "shipped_qty": line.shipped_qty,
+            "remaining_qty": (line.inbound_qty - line.shipped_qty),
+            "unit_price": "%.2f"|format(line.unit_price or 0),
+            "remark": line.remark or ""
+        }) %}
+    {% endfor %}
+    {% set _ = order_catalog.append({
+        "id": order.id,
+        "label": (order.order_no ~ " / " ~ order.owner.name),
+        "owner_user_id": order.owner_user_id,
+        "lines": line_items
+    }) %}
+{% endfor %}
+
+{% block title %}新建出库单 - 平贴管理系统{% endblock %}
+{% block page_heading %}新建出库单{% endblock %}
+{% block page_subtitle %}选中已入库订单后，明细会自动同步；数量默认带出剩余未出库数量，也允许在合理范围内改小。{% endblock %}
+
+{% block content %}
+<form method="post" action="/outbounds/">
+    <div class="stack">
+        <section class="page-card">
+            <div class="section-header">
+                <div class="section-title">
+                    <h2>出库单头</h2>
+                    <p>先选日期和已入库订单，系统会同步剩余可出明细。</p>
+                </div>
+            </div>
+            <div class="panel-body">
+                {% if error %}
+                <div class="error-banner">{{ error }}</div>
+                {% endif %}
+                <div class="form-grid">
+                    <div class="form-field">
+                        <label for="outbound_date">出库日期</label>
+                        <input type="date" id="outbound_date" name="outbound_date" value="{{ outbound.outbound_date if outbound else (form.outbound_date if form else '') }}" required>
+                    </div>
+                    <div class="form-field">
+                        <label for="owner_user_id">客户信息</label>
+                        <select name="owner_user_id" id="owner_user_id" required>
+                            {% for owner in owners %}
+                            <option value="{{ owner.id }}" {{ 'selected' if (outbound and outbound.owner_user_id == owner.id) or (form and form.owner_user_id == owner.id) else '' }}>
+                                {{ owner.name }}
+                            </option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="form-field">
+                        <label for="related_order_id">关联订单</label>
+                        <select name="related_order_id" id="related_order_id">
+                            <option value="">不关联订单</option>
+                            {% for item in order_catalog %}
+                            <option value="{{ item.id }}" {{ 'selected' if form and form.related_order_id == item.id else '' }}>
+                                {{ item.label }}
+                            </option>
+                            {% endfor %}
+                        </select>
+                        <input type="hidden" name="related_inbound_id" value="">
+                    </div>
+                    <div class="form-field full">
+                        <label for="remark">备注</label>
+                        <textarea id="remark" name="remark">{{ outbound.remark if outbound else (form.remark if form else '') }}</textarea>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section class="page-card">
+            <div class="section-header">
+                <div class="section-title">
+                    <h2>出库明细</h2>
+                    <p>关联订单时单价自动沿用订单单价；不关联订单时可手动填写单价，总价自动计算。</p>
+                </div>
+                <div class="toolbar" id="manual-line-toolbar">
+                    <button type="button" onclick="addManualOutboundLine()">新增明细行</button>
+                </div>
+            </div>
+            <div class="panel-body">
+                <table class="data-table" id="lines-table">
+                    <thead>
+                        <tr>
+                            <th>产品</th>
+                            <th>数量</th>
+                            <th>单价</th>
+                            <th>总价</th>
+                            <th>备注</th>
+                            <th>操作</th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+                <datalist id="product-options">
+                    {% for item in product_catalog %}
+                    <option value="{{ item.label }}"></option>
+                    {% endfor %}
+                </datalist>
+                <div class="toolbar" style="margin-top: 20px;">
+                    <button type="submit">保存出库单</button>
+                    <a class="button-secondary" href="/outbounds/">返回列表</a>
+                </div>
+            </div>
+        </section>
+    </div>
+</form>
+
+<script>
+const productCatalog = {{ product_catalog | tojson }};
+const outboundOrderCatalog = {{ order_catalog | tojson }};
+
+function resolveProduct(inputValue) {
+    const normalized = (inputValue || "").trim().toLowerCase();
+    if (!normalized) return null;
+    const exact = productCatalog.find((item) => item.label.toLowerCase() === normalized);
+    if (exact) return exact;
+    return productCatalog.find((item) => item.search.toLowerCase().includes(normalized));
+}
+
+function syncProductPicker(row) {
+    const input = row.querySelector('.product-picker-input');
+    const hidden = row.querySelector('input[name="line_product_id"]');
+    const match = resolveProduct(input.value);
+    if (match) {
+        hidden.value = match.id;
+        input.value = match.label;
+        input.setCustomValidity('');
+    } else {
+        hidden.value = '';
+        input.setCustomValidity('请选择有效产品');
+    }
+}
+
+function bindProductPicker(row) {
+    const input = row.querySelector('.product-picker-input');
+    input.addEventListener('change', () => syncProductPicker(row));
+    input.addEventListener('blur', () => syncProductPicker(row));
+}
+
+function formatMoney(value) {
+    const numberValue = Number.parseFloat(value);
+    if (!Number.isFinite(numberValue) || numberValue < 0) {
+        return '0.00';
+    }
+    return numberValue.toFixed(2);
+}
+
+function updateLineTotal(row) {
+    const qty = row.querySelector('input[name="line_qty"]');
+    const unitPrice = row.querySelector('input[name="line_unit_price"]');
+    const totalPrice = row.querySelector('input[name="line_total_price"]');
+    totalPrice.value = formatMoney((Number.parseFloat(qty.value) || 0) * (Number.parseFloat(unitPrice.value) || 0));
+}
+
+function bindPriceCalculator(row) {
+    const qty = row.querySelector('input[name="line_qty"]');
+    const unitPrice = row.querySelector('input[name="line_unit_price"]');
+    qty.addEventListener('input', () => updateLineTotal(row));
+    unitPrice.addEventListener('input', () => updateLineTotal(row));
+    unitPrice.addEventListener('change', () => {
+        unitPrice.value = formatMoney(unitPrice.value);
+        updateLineTotal(row);
+    });
+    updateLineTotal(row);
+}
+
+function createManualOutboundRow() {
+    const row = document.createElement('tr');
+    row.innerHTML = `
+        <td>
+            <input type="text" class="product-picker-input" list="product-options" placeholder="输入编码、名称或规格">
+            <input type="hidden" name="line_product_id" value="" required>
+        </td>
+        <td><input type="number" name="line_qty" value="1" min="1" required></td>
+        <td><input type="number" name="line_unit_price" value="0.00" min="0" step="0.01"></td>
+        <td><input type="number" name="line_total_price" value="0.00" readonly tabindex="-1"></td>
+        <td><input type="text" name="line_remark" value=""></td>
+        <td><button type="button" class="button-secondary" onclick="this.closest('tr').remove()">删除</button></td>
+    `;
+    bindProductPicker(row);
+    bindPriceCalculator(row);
+    return row;
+}
+
+function addManualOutboundLine() {
+    const tbody = document.querySelector('#lines-table tbody');
+    tbody.appendChild(createManualOutboundRow());
+}
+
+function renderOutboundLinesForOrder(orderId) {
+    const tbody = document.querySelector('#lines-table tbody');
+    const toolbar = document.getElementById('manual-line-toolbar');
+    const ownerSelect = document.getElementById('owner_user_id');
+    tbody.innerHTML = '';
+
+    const selectedOrder = outboundOrderCatalog.find((item) => String(item.id) === String(orderId));
+    if (!selectedOrder) {
+        toolbar.style.display = '';
+        tbody.appendChild(createManualOutboundRow());
+        return;
+    }
+
+    ownerSelect.value = String(selectedOrder.owner_user_id);
+    toolbar.style.display = 'none';
+    selectedOrder.lines.forEach((line) => {
+        const row = document.createElement('tr');
+        row.innerHTML = `
+            <td>
+                <input type="text" value="${line.label}" readonly>
+                <input type="hidden" name="line_product_id" value="${line.product_id}" required>
+            </td>
+            <td><input type="number" name="line_qty" value="${line.remaining_qty}" min="0" max="${line.remaining_qty}" required></td>
+            <td><input type="number" name="line_unit_price" value="${line.unit_price || '0.00'}" min="0" step="0.01" readonly></td>
+            <td><input type="number" name="line_total_price" value="0.00" readonly tabindex="-1"></td>
+            <td><input type="text" name="line_remark" value="${line.remark || ''}"></td>
+            <td><span style="color:#6b7280;">剩余 ${line.remaining_qty}</span></td>
+        `;
+        tbody.appendChild(row);
+        bindPriceCalculator(row);
+    });
+}
+
+const outboundOrderSelect = document.getElementById('related_order_id');
+outboundOrderSelect.addEventListener('change', (event) => renderOutboundLinesForOrder(event.target.value));
+renderOutboundLinesForOrder(outboundOrderSelect.value);
+</script>
+{% endblock %}

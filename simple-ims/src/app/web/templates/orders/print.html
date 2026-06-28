@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ order.order_no }} - 生产单打印</title>
+    <style>
+        @page {
+            size: A4 portrait;
+            margin: 8mm;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            font-family: "SimSun", "Songti SC", "Microsoft YaHei", serif;
+            color: #111;
+            background: #f2f2f2;
+        }
+
+        .toolbar {
+            max-width: 1080px;
+            margin: 16px auto 0;
+            display: flex;
+            gap: 10px;
+        }
+
+        .toolbar button,
+        .toolbar a {
+            border: 1px solid #c0c7d0;
+            background: #fff;
+            color: #1c2e46;
+            padding: 8px 14px;
+            border-radius: 8px;
+            text-decoration: none;
+            cursor: pointer;
+            font-size: 14px;
+        }
+
+        .paper {
+            width: 210mm;
+            min-height: 297mm;
+            margin: 8px auto 20px;
+            background: #fff;
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.08);
+            padding: 10mm 9mm 14mm;
+        }
+
+        .dash-line {
+            border-top: 1px dashed #666;
+            margin-bottom: 18px;
+        }
+
+        .title {
+            text-align: center;
+            font-size: 30px;
+            letter-spacing: 14px;
+            margin: 4px 0 18px;
+            font-weight: 700;
+        }
+
+        .meta {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 14px;
+        }
+
+        .meta td {
+            padding: 7px 4px;
+            font-size: 15px;
+            vertical-align: top;
+        }
+
+        .meta .label {
+            width: 92px;
+            white-space: nowrap;
+            letter-spacing: 2px;
+        }
+
+        .line-table {
+            width: 100%;
+            border-collapse: collapse;
+            table-layout: fixed;
+        }
+
+        .line-table th,
+        .line-table td {
+            border: 1px solid #333;
+            padding: 7px 5px;
+            font-size: 13px;
+            line-height: 1.35;
+            word-break: break-all;
+            text-align: center;
+        }
+
+        .line-table th {
+            font-size: 14px;
+            letter-spacing: 1px;
+            font-weight: 700;
+        }
+
+        .line-table .left {
+            text-align: left;
+        }
+
+        .line-table .narrow {
+            width: 6%;
+        }
+
+        .line-table .product-name {
+            width: 22%;
+        }
+
+        .line-table .spec {
+            width: 17%;
+        }
+
+        .line-table .unit {
+            width: 7%;
+        }
+
+        .line-table .substrate {
+            width: 12%;
+        }
+
+        .line-table .surface {
+            width: 9%;
+        }
+
+        .line-table .qty {
+            width: 9%;
+        }
+
+        .line-table .remark {
+            width: 18%;
+            white-space: normal;
+            word-break: break-word;
+        }
+
+        .line-table .blank-row td {
+            height: 44px;
+        }
+
+        .footer {
+            margin-top: 22px;
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 16px;
+            font-size: 14px;
+        }
+
+        .footer div {
+            min-height: 40px;
+        }
+
+        @media print {
+            body {
+                background: #fff;
+            }
+
+            .toolbar {
+                display: none;
+            }
+
+            .paper {
+                margin: 0;
+                box-shadow: none;
+                width: 100%;
+                min-height: auto;
+                padding: 0;
+            }
+        }
+    </style>
+</head>
+<body>
+    {% set status_labels = {
+        "producing": "生产中",
+        "partially_inbound": "部分入库",
+        "in_stock": "已入库",
+        "partially_shipped": "部分出库",
+        "shipped": "已完成",
+        "cancelled": "已取消"
+    } %}
+    <div class="toolbar">
+        <button onclick="window.print()">打印</button>
+        <a href="/orders/{{ order.id }}">返回详情</a>
+    </div>
+
+    <div class="paper">
+        <div class="dash-line"></div>
+        <div class="title">生产单</div>
+
+        <table class="meta">
+            <tr>
+                <td class="label">订单号:</td>
+                <td>{{ order.order_no }}</td>
+                <td class="label">订单日期:</td>
+                <td>{{ order.order_date }}</td>
+                <td class="label">交期:</td>
+                <td>{{ order.due_date or "-" }}</td>
+            </tr>
+            <tr>
+                <td class="label">客户信息:</td>
+                <td>{{ order.owner.name }}</td>
+                <td class="label">状态:</td>
+                <td>{{ status_labels.get(order.status, order.status) }}</td>
+                <td class="label">备注:</td>
+                <td>{{ order.remark or "-" }}</td>
+            </tr>
+            <tr>
+                <td class="label">创建时间:</td>
+                <td>{{ order.created_at|localtime }}</td>
+                <td class="label">更新时间:</td>
+                <td>{{ order.updated_at|localtime }}</td>
+                <td class="label">订单ID:</td>
+                <td>{{ order.id }}</td>
+            </tr>
+        </table>
+
+        <table class="line-table">
+            <thead>
+                <tr>
+                    <th class="narrow">序号</th>
+                    <th class="product-name">物品名称</th>
+                    <th class="spec">规格</th>
+                    <th class="unit">单位</th>
+                    <th class="substrate">基材</th>
+                    <th class="surface">面</th>
+                    <th class="qty">数量</th>
+                    <th class="remark">备注</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% set ns = namespace(total_qty=0) %}
+                {% for line in order.lines %}
+                {% set ns.total_qty = ns.total_qty + line.qty %}
+                <tr>
+                    <td>{{ loop.index }}</td>
+                    <td class="left product-name">{{ line.product.product_name }}</td>
+                    <td class="spec">{{ line.product.spec or "-" }}</td>
+                    <td class="unit">{{ line.product.unit or "-" }}</td>
+                    <td class="substrate">{{ line.substrate_category or "-" }}</td>
+                    <td class="surface">{{ line.surface_type or "-" }}</td>
+                    <td class="qty">{{ "%.2f"|format(line.qty) }}</td>
+                    <td class="left">{{ line.remark or "-" }}</td>
+                </tr>
+                {% endfor %}
+                {% for _ in range(5) %}
+                <tr class="blank-row">
+                    <td></td>
+                    <td></td>
+                    <td></td>
+                    <td></td>
+                    <td></td>
+                    <td></td>
+                    <td></td>
+                    <td></td>
+                </tr>
+                {% endfor %}
+                <tr>
+                    <td></td>
+                    <td>合计</td>
+                    <td></td>
+                    <td></td>
+                    <td></td>
+                    <td></td>
+                    <td>{{ "%.2f"|format(ns.total_qty) }}</td>
+                    <td></td>
+                </tr>
+            </tbody>
+        </table>
+
+        <div class="footer">
+            <div>制单:</div>
+            <div>审核:</div>
+            <div>生产:</div>
+            <div>签收:</div>
+        </div>
+    </div>
+</body>
+</html>

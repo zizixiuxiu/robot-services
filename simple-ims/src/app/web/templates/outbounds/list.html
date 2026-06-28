@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+
+{% block title %}出库单 - Simple IMS{% endblock %}
+{% block page_heading %}出库单{% endblock %}
+{% block page_subtitle %}出库单负责从共享库存发货，并回写对应订单的出库进度。{% endblock %}
+
+{% block content %}
+<section class="page-card">
+    <div class="section-header">
+        <div class="section-title">
+            <h2>出库单列表</h2>
+            <p>这里统一查看发货记录，以及它关联的是哪一张已入库单。</p>
+        </div>
+        <div class="toolbar">
+            <a class="button" href="/outbounds/new">新建出库单</a>
+        </div>
+    </div>
+    <div class="panel-body">
+        {% if error %}
+        <div class="error-banner">{{ error }}</div>
+        {% endif %}
+        {% if outbounds %}
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>出库单号</th>
+                    <th>日期</th>
+                    <th>客户信息</th>
+                    <th>关联入库单</th>
+                    <th>备注</th>
+                    <th>操作</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for outbound in outbounds %}
+                <tr>
+                    <td>{{ outbound.outbound_no }}</td>
+                    <td>{{ outbound.outbound_date }}</td>
+                    <td>{{ outbound.owner.name }}</td>
+                    <td>{{ outbound.related_inbound.inbound_no if outbound.related_inbound else "-" }}</td>
+                    <td>{{ outbound.remark or "-" }}</td>
+                    <td class="cell-actions">
+                        <a class="button-secondary" href="/outbounds/{{ outbound.id }}">详情</a>
+                        <a class="button-secondary" href="/outbounds/{{ outbound.id }}/print" target="_blank">打印</a>
+                        <form class="inline-form" method="post" action="/outbounds/{{ outbound.id }}/delete" onsubmit="return confirm('确认删除出库单「{{ outbound.outbound_no }}」吗？系统会同步回滚库存。');">
+                            <button type="submit" class="button-secondary button-danger">删除</button>
+                        </form>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <div class="empty-hint">还没有出库单，先让一张已入库订单开始发货。</div>
+        {% endif %}
+    </div>
+</section>
+{% endblock %}

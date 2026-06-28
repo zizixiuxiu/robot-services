@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+
+{% block title %}工作台 - Simple IMS{% endblock %}
+{% block page_heading %}工作台{% endblock %}
+{% block page_subtitle %}用熟悉的后台布局查看共享库存、订单和出入库进度。{% endblock %}
+
+{% block content %}
+<div class="stack">
+    <section class="page-card">
+        <div class="section-header">
+            <div class="section-title">
+                <h2>业务概览</h2>
+                <p>这一版先聚焦产品、库存、订单、入库单和出库单。</p>
+            </div>
+        </div>
+        <div class="panel-body">
+            <div class="metrics-grid">
+                <div class="metric-card">
+                    <span>客户信息</span>
+                    <strong>{{ counts.owners }}</strong>
+                </div>
+                <div class="metric-card">
+                    <span>产品数量</span>
+                    <strong>{{ counts.products }}</strong>
+                </div>
+                <div class="metric-card">
+                    <span>库存记录</span>
+                    <strong>{{ counts.stock }}</strong>
+                </div>
+                <div class="metric-card">
+                    <span>订单数</span>
+                    <strong>{{ counts.orders }}</strong>
+                </div>
+                <div class="metric-card">
+                    <span>入库单数</span>
+                    <strong>{{ counts.inbounds }}</strong>
+                </div>
+                <div class="metric-card">
+                    <span>出库单数</span>
+                    <strong>{{ counts.outbounds }}</strong>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section class="page-card">
+        <div class="section-header">
+            <div class="section-title">
+                <h2>建议操作</h2>
+                <p>先跑一条完整链路，确认共享库存的业务规则符合你的预期。</p>
+            </div>
+            <div class="toolbar">
+                <a class="button" href="/products/new">新建产品</a>
+                <a class="button-secondary" href="/stock/in">手工入库</a>
+                <a class="button-secondary" href="/orders/new">新建订单</a>
+            </div>
+        </div>
+        <div class="panel-body">
+            <div class="info-grid">
+                <div class="label">第一步</div><div>去“产品资料”创建一个可共用库存的产品。</div>
+                <div class="label">第二步</div><div>去“库存台账”先给这个产品加库存，例如 100。</div>
+                <div class="label">第三步</div><div>分别给奢匠和固豪创建订单，确认它们只是订单归属，不是分仓。</div>
+                <div class="label">第四步</div><div>去“出库单”按不同客户信息出库，最后在库存页确认它们共用同一份库存。</div>
+            </div>
+        </div>
+    </section>
+</div>
+{% endblock %}

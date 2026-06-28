@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+
+{% block title %}{{ product.product_name }} - Simple IMS{% endblock %}
+{% block page_heading %}产品详情{% endblock %}
+{% block page_subtitle %}查看产品主数据，确认它能被订单和库存模块稳定复用。{% endblock %}
+
+{% block content %}
+<section class="page-card">
+    <div class="section-header">
+        <div class="section-title">
+            <h2>{{ product.product_name }}</h2>
+            <p>{{ product.product_code }}</p>
+        </div>
+        <div class="toolbar">
+            <a class="button" href="/products/{{ product.id }}/edit">编辑产品</a>
+            <a class="button-secondary" href="/products/">返回列表</a>
+        </div>
+    </div>
+    <div class="panel-body">
+        <div class="info-grid">
+            <div class="label">产品编码</div><div>{{ product.product_code }}</div>
+            <div class="label">产品名称</div><div>{{ product.product_name }}</div>
+            <div class="label">规格型号</div><div>{{ product.spec or "-" }}</div>
+            <div class="label">计量单位</div><div>{{ product.unit or "-" }}</div>
+            <div class="label">单价</div><div>{{ "%.2f"|format(product.unit_price or 0) }} 元</div>
+            <div class="label">基材类别</div><div>{{ product.substrate_category or "-" }}</div>
+            <div class="label">单面双面</div><div>{{ product.surface_type or "-" }}</div>
+            <div class="label">状态</div><div>{{ "启用" if product.enabled else "停用" }}</div>
+            <div class="label">备注</div><div>{{ product.remark or "-" }}</div>
+            <div class="label">创建时间</div><div>{{ product.created_at|localtime }}</div>
+            <div class="label">更新时间</div><div>{{ product.updated_at|localtime }}</div>
+        </div>
+    </div>
+</section>
+{% endblock %}

@@ -1,0 +1,21 @@
+name: feishu-ws-gateway
+
+services:
+  feishu-ws-gateway:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+    container_name: feishu-ws-gateway
+    volumes:
+      - ../../src:/app/src:ro
+      - ../../logs:/app/logs
+    env_file:
+      - ../../.env
+    environment:
+      - PYTHONUNBUFFERED=1
+      - FEISHU_LOG_FILE=/app/logs/feishu_bot_ws.log
+      - HTTP_SERVICE_HOST=host.docker.internal
+      - FEISHU_APP_ID=${FEISHU_APP_ID:-cli_a96f57b08d3bdbd8}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped

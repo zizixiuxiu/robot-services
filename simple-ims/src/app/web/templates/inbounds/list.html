@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+
+{% block title %}入库单 - Simple IMS{% endblock %}
+{% block page_heading %}入库单{% endblock %}
+{% block page_subtitle %}入库单负责把生产完成的订单正式增加库存。{% endblock %}
+
+{% block content %}
+<section class="page-card">
+    <div class="section-header">
+        <div class="section-title">
+            <h2>入库单列表</h2>
+            <p>这里使用成熟系统常见的“单头 + 明细”结构，后续也方便图片识别建单。</p>
+        </div>
+        <div class="toolbar">
+            <a class="button" href="/inbounds/new">新建入库单</a>
+        </div>
+    </div>
+    <div class="panel-body">
+        {% if error %}
+        <div class="error-banner">{{ error }}</div>
+        {% endif %}
+        {% if inbounds %}
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>入库单号</th>
+                    <th>日期</th>
+                    <th>关联订单</th>
+                    <th>备注</th>
+                    <th>操作</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for inbound in inbounds %}
+                <tr>
+                    <td>{{ inbound.inbound_no }}</td>
+                    <td>{{ inbound.inbound_date }}</td>
+                    <td>{{ inbound.related_order.order_no if inbound.related_order else "-" }}</td>
+                    <td>{{ inbound.remark or "-" }}</td>
+                    <td class="cell-actions">
+                        <a class="button-secondary" href="/inbounds/{{ inbound.id }}">详情</a>
+                        <form class="inline-form" method="post" action="/inbounds/{{ inbound.id }}/delete" onsubmit="return confirm('确认删除入库单「{{ inbound.inbound_no }}」吗？系统会同步回滚库存。');">
+                            <button type="submit" class="button-secondary button-danger">删除</button>
+                        </form>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <div class="empty-hint">还没有入库单，先从一张草稿订单开始做生产入库。</div>
+        {% endif %}
+    </div>
+</section>
+{% endblock %}

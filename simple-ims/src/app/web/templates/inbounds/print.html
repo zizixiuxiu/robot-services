@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ inbound.inbound_no }} - 入库单打印</title>
+    <style>
+        @page {
+            size: A4 portrait;
+            margin: 8mm;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            font-family: "SimSun", "Songti SC", "Microsoft YaHei", serif;
+            color: #222;
+            background: #f3f4f6;
+        }
+
+        .print-toolbar {
+            max-width: 980px;
+            margin: 20px auto 0;
+            display: flex;
+            gap: 10px;
+        }
+
+        .print-toolbar button,
+        .print-toolbar a {
+            border: 1px solid #bfc8d1;
+            background: #fff;
+            color: #22324a;
+            padding: 8px 14px;
+            border-radius: 8px;
+            text-decoration: none;
+            cursor: pointer;
+            font-size: 14px;
+        }
+
+        .sheet {
+            width: 210mm;
+            min-height: 297mm;
+            margin: 10px auto 24px;
+            background: #fff;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.08);
+            padding: 14mm 9mm;
+        }
+
+        .sheet-header {
+            text-align: center;
+            border-bottom: 2px solid #2f4d72;
+            padding-bottom: 12px;
+            margin-bottom: 14px;
+        }
+
+        .sheet-header h1 {
+            margin: 0;
+            font-size: 28px;
+            letter-spacing: 4px;
+        }
+
+        .sheet-header .doc-no {
+            margin-top: 10px;
+            font-size: 15px;
+        }
+
+        .meta-grid {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 14px;
+        }
+
+        .meta-grid td {
+            border: 1px solid #525f6c;
+            padding: 8px 10px;
+            font-size: 14px;
+        }
+
+        .meta-grid .label {
+            width: 16%;
+            background: #f6f8fb;
+            font-weight: 700;
+        }
+
+        .line-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 8px;
+            table-layout: fixed;
+        }
+
+        .line-table th,
+        .line-table td {
+            border: 1px solid #525f6c;
+            padding: 8px 5px;
+            font-size: 13px;
+            vertical-align: top;
+            word-break: break-word;
+            line-height: 1.4;
+        }
+
+        .line-table th {
+            background: #eef3f8;
+        }
+
+        .line-table .num {
+            text-align: center;
+            width: 6%;
+        }
+
+        .line-table .product-name {
+            width: 25%;
+        }
+
+        .line-table .qty {
+            text-align: right;
+            width: 9%;
+        }
+
+        .line-table .code {
+            width: 13%;
+        }
+
+        .line-table .spec {
+            width: 20%;
+        }
+
+        .line-table .unit {
+            width: 7%;
+        }
+
+        .line-table .remark {
+            width: 20%;
+            white-space: normal;
+        }
+
+        .summary-row td {
+            font-weight: 700;
+            background: #fafbfc;
+        }
+
+        .signatures {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 20px;
+            margin-top: 28px;
+        }
+
+        .signature-box {
+            border-top: 1px solid #444;
+            padding-top: 10px;
+            min-height: 70px;
+            font-size: 14px;
+        }
+
+        .print-note {
+            margin-top: 18px;
+            color: #6c7680;
+            font-size: 12px;
+        }
+
+        @media print {
+            body {
+                background: #fff;
+            }
+
+            .print-toolbar {
+                display: none;
+            }
+
+            .sheet {
+                margin: 0;
+                box-shadow: none;
+                width: 100%;
+                min-height: auto;
+                padding: 0;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="print-toolbar">
+        <button onclick="window.print()">打印</button>
+        <a href="/inbounds/{{ inbound.id }}">返回详情</a>
+    </div>
+
+    <div class="sheet">
+        <div class="sheet-header">
+            <h1>入 库 单</h1>
+            <div class="doc-no">单号：{{ inbound.inbound_no }}</div>
+        </div>
+
+        <table class="meta-grid">
+            <tr>
+                <td class="label">入库日期</td>
+                <td>{{ inbound.inbound_date }}</td>
+                <td class="label">创建时间</td>
+                <td>{{ inbound.created_at|localtime }}</td>
+            </tr>
+            <tr>
+                <td class="label">备注</td>
+                <td colspan="3">{{ inbound.remark or "-" }}</td>
+            </tr>
+        </table>
+
+        <table class="line-table">
+            <thead>
+                <tr>
+                    <th class="num">序号</th>
+                    <th class="product-name">产品名称</th>
+                    <th class="code">产品编码</th>
+                    <th class="spec">规格</th>
+                    <th class="unit">单位</th>
+                    <th class="qty">数量</th>
+                    <th class="remark">备注</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% set ns = namespace(total=0) %}
+                {% for line in inbound.lines %}
+                {% set ns.total = ns.total + line.qty %}
+                <tr>
+                    <td class="num">{{ loop.index }}</td>
+                    <td class="product-name">{{ line.product.product_name }}</td>
+                    <td class="code">{{ line.product.product_code }}</td>
+                    <td class="spec">{{ line.product.spec or "-" }}</td>
+                    <td class="unit">{{ line.product.unit or "-" }}</td>
+                    <td class="qty">{{ line.qty }}</td>
+                    <td class="remark">{{ line.remark or "-" }}</td>
+                </tr>
+                {% endfor %}
+                <tr class="summary-row">
+                    <td colspan="5">合计</td>
+                    <td class="qty">{{ ns.total }}</td>
+                    <td>-</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <div class="signatures">
+            <div class="signature-box">制单：</div>
+            <div class="signature-box">仓管：</div>
+            <div class="signature-box">审核：</div>
+        </div>
+
+        <div class="print-note">打印说明：此单据用于仓库入库留档，建议使用 A4 纵向打印。</div>
+    </div>
+</body>
+</html>

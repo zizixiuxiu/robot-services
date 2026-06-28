@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+
+{% block title %}库存流水 - Simple IMS{% endblock %}
+{% block page_heading %}库存流水{% endblock %}
+{% block page_subtitle %}每次增减库存都会留下前后数量，方便回溯库存变化来源。{% endblock %}
+
+{% block content %}
+<section class="page-card">
+    <div class="section-header">
+        <div class="section-title">
+            <h2>流水记录</h2>
+            <p>看不懂余额时，先看这里最容易定位问题。</p>
+        </div>
+        <div class="toolbar">
+            <a class="button-secondary" href="/stock/">返回库存台账</a>
+        </div>
+    </div>
+    <div class="panel-body">
+        {% if movements %}
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>产品编码</th>
+                    <th>产品名称</th>
+                    <th>业务类型</th>
+                    <th>变动</th>
+                    <th>变动前</th>
+                    <th>变动后</th>
+                    <th>备注</th>
+                    <th>时间</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for movement in movements %}
+                {% set product = product_map.get(movement.product_id) %}
+                <tr>
+                    <td>{{ product.product_code if product else "N/A" }}</td>
+                    <td>{{ product.product_name if product else "N/A" }}</td>
+                    <td><span class="badge badge-neutral">{{ movement.biz_type }}</span></td>
+                    <td>{{ movement.change_qty }}</td>
+                    <td>{{ movement.before_qty }}</td>
+                    <td>{{ movement.after_qty }}</td>
+                    <td>{{ movement.remark or "" }}</td>
+                    <td>{{ movement.created_at|localtime }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <div class="empty-hint">还没有库存流水，先做一次入库或出库。</div>
+        {% endif %}
+    </div>
+</section>
+{% endblock %}

@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+
+{% block title %}订单管理 - Simple IMS{% endblock %}
+{% block page_heading %}订单管理{% endblock %}
+{% block page_subtitle %}订单创建后进入生产中状态，再通过入库单进入已入库状态，最后由出库单完成发货。{% endblock %}
+
+{% block content %}
+{% set status_labels = {
+    "producing": "生产中",
+    "partially_inbound": "部分入库",
+    "in_stock": "已入库",
+    "partially_shipped": "部分出库",
+    "shipped": "已完成",
+    "cancelled": "已取消"
+} %}
+<section class="page-card">
+    <div class="section-header">
+        <div class="section-title">
+            <h2>订单列表</h2>
+            <p>订单只记录需求；真正的库存变化发生在入库单和出库单。</p>
+        </div>
+        <div class="toolbar">
+            <a class="button" href="/orders/new">新建订单</a>
+        </div>
+    </div>
+    <div class="panel-body">
+        {% if error %}
+        <div class="error-banner">{{ error }}</div>
+        {% endif %}
+        {% if orders %}
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>订单号</th>
+                    <th>日期</th>
+                    <th>客户信息</th>
+                    <th>状态</th>
+                    <th>操作</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for order in orders %}
+                <tr>
+                    <td>{{ order.order_no }}</td>
+                    <td>{{ order.order_date }}</td>
+                    <td>{{ order.owner.name }}</td>
+                    <td><span class="badge badge-neutral">{{ status_labels.get(order.status, order.status) }}</span></td>
+                    <td class="cell-actions">
+                        <a class="button-secondary" href="/orders/{{ order.id }}">详情</a>
+                        <a class="button-secondary" href="/orders/{{ order.id }}/print" target="_blank">打印</a>
+                        <a class="button-secondary" href="/orders/{{ order.id }}/labels" target="_blank">标签</a>
+                        {% if order.status == "producing" %}
+                        <a class="button-secondary" href="/orders/{{ order.id }}/edit">编辑</a>
+                        {% endif %}
+                        <form class="inline-form" method="post" action="/orders/{{ order.id }}/delete" onsubmit="return confirm('确认删除订单「{{ order.order_no }}」吗？删除后不可恢复。');">
+                            <button type="submit" class="button-secondary button-danger">删除</button>
+                        </form>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <div class="empty-hint">还没有订单，先建一张订单开始走流程。</div>
+        {% endif %}
+    </div>
+</section>
+{% endblock %}

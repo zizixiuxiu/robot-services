@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+
+{% block title %}{{ order.order_no }} - Simple IMS{% endblock %}
+{% block page_heading %}订单详情{% endblock %}
+{% block page_subtitle %}这里查看订单明细、当前状态，以及后续打印生产单。{% endblock %}
+
+{% block content %}
+{% set status_labels = {
+    "producing": "生产中",
+    "partially_inbound": "部分入库",
+    "in_stock": "已入库",
+    "partially_shipped": "部分出库",
+    "shipped": "已完成",
+    "cancelled": "已取消"
+} %}
+<div class="stack">
+    <section class="page-card">
+        <div class="section-header">
+            <div class="section-title">
+                <h2>{{ order.order_no }}</h2>
+                <p>客户信息：{{ order.owner.name }}</p>
+            </div>
+            <div class="toolbar">
+                <a class="button" href="/orders/{{ order.id }}/print" target="_blank">打印生产单</a>
+                {% if order.status == "producing" %}
+                <a class="button-secondary" href="/orders/{{ order.id }}/edit">编辑订单</a>
+                {% endif %}
+                <a class="button-secondary" href="/orders/">返回列表</a>
+            </div>
+        </div>
+        <div class="panel-body">
+            <div class="info-grid">
+                <div class="label">订单号</div><div>{{ order.order_no }}</div>
+                <div class="label">订单日期</div><div>{{ order.order_date }}</div>
+                <div class="label">交期</div><div>{{ order.due_date or "-" }}</div>
+                <div class="label">客户信息</div><div>{{ order.owner.name }}</div>
+                <div class="label">状态</div><div>{{ status_labels.get(order.status, order.status) }}</div>
+                <div class="label">备注</div><div>{{ order.remark or "-" }}</div>
+                <div class="label">创建时间</div><div>{{ order.created_at|localtime }}</div>
+                <div class="label">更新时间</div><div>{{ order.updated_at|localtime }}</div>
+            </div>
+        </div>
+    </section>
+
+    <section class="page-card">
+        <div class="section-header">
+            <div class="section-title">
+                <h2>订单明细</h2>
+                <p>订单先入库再出库，所以这里同时保留订单数量、已入库数量和已出库数量。</p>
+            </div>
+        </div>
+        <div class="panel-body">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>产品</th>
+                        <th>规格</th>
+                        <th>单位</th>
+                        <th>基材类别</th>
+                        <th>单面双面</th>
+                        <th>数量</th>
+                        <th>单价</th>
+                        <th>总价</th>
+                        <th>已入库</th>
+                        <th>已出库</th>
+                        <th>备注</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for line in order.lines %}
+                    <tr>
+                        <td>{{ line.product.product_name }}</td>
+                        <td>{{ line.product.spec or "-" }}</td>
+                        <td>{{ line.product.unit or "-" }}</td>
+                        <td>{{ line.substrate_category or "-" }}</td>
+                        <td>{{ line.surface_type or "-" }}</td>
+                        <td>{{ line.qty }}</td>
+                        <td>{{ "%.2f"|format(line.unit_price or 0) }}</td>
+                        <td>{{ "%.2f"|format(line.total_price or 0) }}</td>
+                        <td>{{ line.inbound_qty }}</td>
+                        <td>{{ line.shipped_qty }}</td>
+                        <td>{{ line.remark or "-" }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </section>
+</div>
+{% endblock %}

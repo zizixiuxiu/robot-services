@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+
+{% block title %}{{ "编辑产品" if product else "新建产品" }} - Simple IMS{% endblock %}
+{% block page_heading %}{{ "编辑产品" if product else "新建产品" }}{% endblock %}
+{% block page_subtitle %}保持编码、名称、规格和单位规范一致，后面建单会顺很多。{% endblock %}
+
+{% block content %}
+<section class="page-card">
+    <div class="section-header">
+        <div class="section-title">
+            <h2>产品表单</h2>
+            <p>这里先保留最小字段集，避免做成大而全的 ERP 主数据。</p>
+        </div>
+    </div>
+    <div class="panel-body">
+        {% if error %}
+        <div class="error-banner">{{ error }}</div>
+        {% endif %}
+        <form method="post" action="{{ '/products/' + product.id|string + '/edit' if product else '/products/' }}">
+            <div class="form-grid">
+                <div class="form-field">
+                    <label for="product_code">产品编码</label>
+                    {% if product %}
+                    <input id="product_code" type="text" name="product_code" value="{{ product.product_code }}" required>
+                    {% else %}
+                    <input id="product_code" type="text" value="保存后自动生成（从 1000001 开始）" disabled>
+                    <small class="help-text">新建产品时系统会自动分配编码，你不用手填。</small>
+                    {% endif %}
+                </div>
+                <div class="form-field">
+                    <label for="product_name">产品名称</label>
+                    <input id="product_name" type="text" name="product_name" value="{{ product.product_name if product else '' }}" required>
+                </div>
+                <div class="form-field">
+                    <label for="spec">规格型号</label>
+                    <input id="spec" type="text" name="spec" value="{{ product.spec if product else '' }}">
+                </div>
+                <div class="form-field">
+                    <label for="unit">计量单位</label>
+                    <input id="unit" type="text" name="unit" value="{{ product.unit if product else '' }}">
+                </div>
+                <div class="form-field">
+                    <label for="unit_price">单价（元）</label>
+                    <input id="unit_price" type="number" name="unit_price" value="{{ '%.2f'|format(product.unit_price or 0) if product else '0.00' }}" min="0" step="0.01">
+                </div>
+                <div class="form-field">
+                    <label for="substrate_category">基材类别</label>
+                    <input id="substrate_category" type="text" name="substrate_category" value="{{ product.substrate_category if product else '' }}" placeholder="输入基材类别">
+                </div>
+                <div class="form-field">
+                    <label for="surface_type">单面双面</label>
+                    <select id="surface_type" name="surface_type">
+                        {% set current_surface = product.surface_type if product else '' %}
+                        <option value="" {{ 'selected' if not current_surface else '' }}>请选择</option>
+                        <option value="单面" {{ 'selected' if current_surface == '单面' else '' }}>单面</option>
+                        <option value="双面" {{ 'selected' if current_surface == '双面' else '' }}>双面</option>
+                    </select>
+                </div>
+                <div class="form-field full">
+                    <label for="remark">备注</label>
+                    <textarea id="remark" name="remark">{{ product.remark if product else '' }}</textarea>
+                </div>
+                <div class="form-field full">
+                    <label>启用状态</label>
+                    <div class="checkbox-row">
+                        <input id="enabled" type="checkbox" name="enabled" value="true" {{ 'checked' if not product or product.enabled else '' }}>
+                        <label for="enabled">该产品可在订单、入库和出库中使用</label>
+                    </div>
+                </div>
+            </div>
+            <div class="toolbar" style="margin-top: 20px;">
+                <button type="submit">保存产品</button>
+                <a class="button-secondary" href="/products/">返回列表</a>
+            </div>
+        </form>
+    </div>
+</section>
+{% endblock %}
