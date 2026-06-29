@@ -10,7 +10,9 @@ import sys
 import shutil
 import json
 import re
+import struct
 import xlrd
+import xlwt
 from xlutils.copy import copy
 
 def get_date_code_from_filename(filename):
@@ -90,6 +92,7 @@ def extract_base_color(color):
     if not color:
         return ''
     color = str(color).strip()
+    color = re.sub(r'[（(]\s*(?:多层加密)?\s*[）)]', '', color)
     # Remove common suffixes that are descriptive but not color identifiers
     for suffix in ['门套门扇']:
         if color.endswith(suffix):
@@ -109,7 +112,8 @@ def normalize_color_for_lookup(color):
     """Normalize color for family lookup."""
     if not color:
         return ''
-    c = str(color).strip().upper()
+    c = re.sub(r'[（(]\s*(?:多层加密)?\s*[）)]', '', str(color).strip()).upper()
+    c = c.replace('多层加密', '')
     m = re.match(r'^YSM-?(\d+)-(\d+)$', c)
     if m:
         return f'YSM-{m.group(1)}-{m.group(2)}'
@@ -529,6 +533,234 @@ def get_template_file(output_dir, cat_type, existing_files, reference_dir=None):
     
     return None
 
+def clone_cell_style_with_font_size(book, sheet, row_idx, col_idx, cache, font_points=12):
+    """Clone an existing cell style and force the font size in points."""
+    try:
+        xf_index = sheet.cell_xf_index(row_idx, col_idx)
+    except Exception:
+        xf_index = 0
+
+    key = (xf_index, font_points)
+    if key in cache:
+        return cache[key]
+
+    rdxf = book.xf_list[xf_index]
+    style = xlwt.XFStyle()
+    style.num_format_str = book.format_map[rdxf.format_key].format_str
+
+    src_font = book.font_list[rdxf.font_index]
+    dst_font = style.font
+    dst_font.height = font_points * 20
+    dst_font.italic = src_font.italic
+    dst_font.struck_out = src_font.struck_out
+    dst_font.outline = src_font.outline
+    dst_font.shadow = src_font.outline
+    dst_font.colour_index = src_font.colour_index
+    dst_font.bold = src_font.bold
+    dst_font._weight = src_font.weight
+    dst_font.escapement = src_font.escapement
+    dst_font.underline = src_font.underline_type
+    dst_font.family = src_font.family
+    dst_font.charset = src_font.character_set
+    dst_font.name = src_font.name
+
+    style.protection.cell_locked = rdxf.protection.cell_locked
+    style.protection.formula_hidden = rdxf.protection.formula_hidden
+
+    style.borders.left = rdxf.border.left_line_style
+    style.borders.right = rdxf.border.right_line_style
+    style.borders.top = rdxf.border.top_line_style
+    style.borders.bottom = rdxf.border.bottom_line_style
+    style.borders.diag = rdxf.border.diag_line_style
+    style.borders.left_colour = rdxf.border.left_colour_index
+    style.borders.right_colour = rdxf.border.right_colour_index
+    style.borders.top_colour = rdxf.border.top_colour_index
+    style.borders.bottom_colour = rdxf.border.bottom_colour_index
+    style.borders.diag_colour = rdxf.border.diag_colour_index
+    style.borders.need_diag1 = rdxf.border.diag_down
+    style.borders.need_diag2 = rdxf.border.diag_up
+
+    style.pattern.pattern = rdxf.background.fill_pattern
+    style.pattern.pattern_fore_colour = rdxf.background.pattern_colour_index
+    style.pattern.pattern_back_colour = rdxf.background.background_colour_index
+
+    style.alignment.horz = rdxf.alignment.hor_align
+    style.alignment.vert = rdxf.alignment.vert_align
+    style.alignment.dire = rdxf.alignment.text_direction
+    style.alignment.rota = rdxf.alignment.rotation
+    style.alignment.wrap = rdxf.alignment.text_wrapped
+    style.alignment.shri = rdxf.alignment.shrink_to_fit
+    style.alignment.inde = rdxf.alignment.indent_level
+
+    cache[key] = style
+    return style
+
+
+def _biff_record(record_id, data):
+    return struct.pack('<HH', record_id, len(data)) + data
+
+
+def _find_biff_record(data, record_id):
+    pos = 0
+    data_len = len(data)
+    while pos + 4 <= data_len:
+        current_id, record_len = struct.unpack_from('<HH', data, pos)
+        if current_id == record_id:
+            return pos
+        pos += 4 + record_len
+    return -1
+
+
+def _selection_record(first_row, last_row, col_idx):
+    data = struct.pack(
+        '<BHHHHHHBB',
+        3,
+        first_row,
+        col_idx,
+        0,
+        1,
+        first_row,
+        last_row,
+        col_idx,
+        col_idx,
+    )
+    return _biff_record(0x001D, data)
+
+
+def _autofilter_name_record(last_row, last_col):
+    rpn = struct.pack('<BHHHHH', 0x3B, 0, 0, last_row, 0, last_col)
+    data = (
+        struct.pack('<HBBHHHBBBBB', 0x0021, 0, 1, len(rpn), 0, 1, 0, 0, 0, 0, 0)
+        + b'\x0d'
+        + rpn
+    )
+    return _biff_record(0x0018, data)
+
+
+def _autofilter_records(col_count):
+    drawing_group = bytes.fromhex(
+        '0f0000f034000000000006f0180000000b080000020000000b0000000100000001'
+        '0000000b00000023000bf00c000000810141000008c00140000008'
+    )
+    first_drawing = bytes.fromhex(
+        '0f0002f090030000100008f0080000000b0000000a0400000f0003f078030000'
+        '0f0004f028000000010009f010000000000000000000000000000000000000000'
+        '2000af00800000000040000050000000f0004f04c000000920c0af008000000'
+        '01040000000a000033000bf0120000007f0004010401bf0008000800bf030000'
+        '0100000010f012000000010000000000000000000100000001000000000011f0'
+        '00000000'
+    )
+    next_drawing_template = bytearray.fromhex(
+        '0f0004f04c000000920c0af00800000002040000000a000033000bf012000000'
+        '7f0004010401bf0008000800bf0300000100000010f012000000010001000000'
+        '000000000200000001000000000011f000000000'
+    )
+    obj_template = bytearray.fromhex(
+        '150012001400010001210000000000000000000000000c001400000000000000'
+        '0000640001000a00000010000100130014000000000004000103000002000800'
+        '4e0000000000'
+    )
+
+    col_count = max(1, min(col_count, 10))
+    sheet_records = [_biff_record(0x009D, struct.pack('<H', col_count))]
+    sheet_records.append(_biff_record(0x00EC, first_drawing))
+    obj = bytearray(obj_template)
+    obj[6:8] = struct.pack('<H', 1)
+    sheet_records.append(_biff_record(0x005D, obj))
+
+    for obj_id in range(2, col_count + 1):
+        drawing = bytearray(next_drawing_template)
+        drawing[16:20] = struct.pack('<I', 0x400 + obj_id)
+        drawing[60:62] = struct.pack('<H', obj_id - 1)
+        drawing[68:70] = struct.pack('<H', obj_id)
+        sheet_records.append(_biff_record(0x00EC, drawing))
+
+        obj = bytearray(obj_template)
+        obj[6:8] = struct.pack('<H', obj_id)
+        sheet_records.append(_biff_record(0x005D, obj))
+
+    return _biff_record(0x00EB, drawing_group), b''.join(sheet_records)
+
+
+def configure_excel_open_state(wb, ws, data_row_count, col_count=10, quantity_col_idx=4):
+    """Add BIFF8 records for header filters and selecting the quantity column on open."""
+    wb.active_sheet = 0
+    wb.setup_ownbook()
+    sheet_refs = getattr(wb, '_Workbook__sheet_refs')
+    sheet_refs.clear()
+    sheet_refs[(wb._ownbook_supbookx, 0, 0)] = 0
+
+    col_count = max(1, min(col_count, 10))
+    global_drawing_record, sheet_filter_records = _autofilter_records(col_count)
+    filter_name_record = _autofilter_name_record(max(0, data_row_count), col_count - 1)
+    original_sheet_get_biff_data = ws.get_biff_data
+
+    def sheet_get_biff_data():
+        data = original_sheet_get_biff_data()
+        window2_pos = _find_biff_record(data, 0x023E)
+        insert_pos = window2_pos if window2_pos >= 0 else max(0, len(data) - 4)
+        data = data[:insert_pos] + sheet_filter_records + data[insert_pos:]
+
+        eof_record = _biff_record(0x000A, b'')
+        eof_pos = _find_biff_record(data, 0x000A)
+        last_selected_row = max(1, data_row_count)
+        selection = _selection_record(1, last_selected_row, quantity_col_idx)
+        if eof_pos >= 0:
+            data = data[:eof_pos] + selection + data[eof_pos:]
+        return data
+
+    ws.get_biff_data = sheet_get_biff_data
+
+    def workbook_get_biff_data():
+        before = b''
+        for method_name in [
+            '__bof_rec', '__intf_hdr_rec', '__intf_mms_rec', '__intf_end_rec',
+            '__write_access_rec', '__codepage_rec', '__dsf_rec', '__tabid_rec',
+            '__fngroupcount_rec', '__wnd_protect_rec', '__protect_rec',
+            '__obj_protect_rec', '__password_rec', '__prot4rev_rec',
+            '__prot4rev_pass_rec', '__backup_rec', '__hide_obj_rec',
+            '__window1_rec', '__datemode_rec', '__precision_rec',
+            '__refresh_all_rec', '__bookbool_rec',
+            '__all_fonts_num_formats_xf_styles_rec', '__palette_rec',
+            '__useselfs_rec',
+        ]:
+            before += getattr(wb, '_Workbook' + method_name)()
+
+        country = wb._Workbook__country_rec()
+        all_links = wb._Workbook__all_links_rec()
+        shared_strings = wb._Workbook__sst_rec()
+        after = country + global_drawing_record + all_links + filter_name_record + shared_strings
+        ext_sst = wb._Workbook__ext_sst_rec(0)
+        eof = wb._Workbook__eof_rec()
+
+        worksheets = getattr(wb, '_Workbook__worksheets')
+        worksheets[wb.active_sheet].selected = True
+        sheets = b''
+        sheet_biff_lens = []
+        for sheet in worksheets:
+            sheet_data = sheet.get_biff_data()
+            sheets += sheet_data
+            sheet_biff_lens.append(len(sheet_data))
+
+        boundsheets = wb._Workbook__boundsheets_rec(
+            len(before),
+            len(after) + len(ext_sst) + len(eof),
+            sheet_biff_lens,
+        )
+        sst_stream_pos = (
+            len(before)
+            + len(boundsheets)
+            + len(country)
+            + len(global_drawing_record)
+            + len(all_links)
+            + len(filter_name_record)
+        )
+        ext_sst = wb._Workbook__ext_sst_rec(sst_stream_pos)
+        return before + boundsheets + after + ext_sst + eof + sheets
+
+    wb.get_biff_data = workbook_get_biff_data
+
+
 def write_to_template(target_path, data_rows, material, template_path=None):
     """Write data to target file, preserving format via xlutils (Linux-compatible)."""
     if not os.path.exists(target_path) and template_path and os.path.exists(template_path):
@@ -541,7 +773,9 @@ def write_to_template(target_path, data_rows, material, template_path=None):
     try:
         book = xlrd.open_workbook(target_path, formatting_info=True)
         wb = copy(book)
+        source_sheet = book.sheet_by_index(0)
         ws = wb.get_sheet(0)
+        style_cache = {}
 
         # 覆盖写入 987 行（与原始 COM 逻辑保持一致，空白行用于清除旧数据）
         for i in range(987):
@@ -553,8 +787,10 @@ def write_to_template(target_path, data_rows, material, template_path=None):
                 # 序号、生产号、颜色等按字符串写入，防止日期自动转换
                 if c_idx in (0, 7, 8):
                     value = str(value)
-                ws.write(i + 1, c_idx, value)
+                style = clone_cell_style_with_font_size(book, source_sheet, i + 1, c_idx, style_cache, 12)
+                ws.write(i + 1, c_idx, value, style)
 
+        configure_excel_open_state(wb, ws, len(data_rows), 10, 4)
         wb.save(target_path)
         return True
     except Exception as e:

@@ -16,6 +16,7 @@ import shutil
 import tempfile
 import logging
 import re
+import zipfile
 from pathlib import Path
 from urllib.parse import urlparse
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
@@ -56,6 +57,20 @@ def _resolve_dir_name(filename: str) -> str:
     if m:
         return m.group(1)
     return base
+
+
+def _safe_zip_name(name: str) -> str:
+    return name.replace("/", "_").replace("\\", "_").strip() or "pvc-classify"
+
+
+def _zip_output_files(file_paths: list[str], zip_path: Path, archive_prefix: str) -> Path:
+    zip_path.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        for file_path in file_paths:
+            path = Path(file_path)
+            if path.exists():
+                zf.write(path, f"{archive_prefix}/{path.name}")
+    return zip_path
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -115,13 +130,15 @@ class Handler(BaseHTTPRequestHandler):
             cost = round(time.time() - t0, 3)
             work_dir = Path(result["work_dir"])
 
-            encoded_files = [
-                self._encode_output_file(Path(p)) for p in result["output_files"]
-            ]
+            original_output_count = len(result["output_files"])
+            zip_base = f"{_safe_zip_name(dir_name)}-自动分类"
+            zip_path = work_dir / f"{zip_base}.zip"
+            _zip_output_files(result["output_files"], zip_path, zip_base)
+            encoded_files = [self._encode_output_file(zip_path)]
             logger.info(
                 "转换完成: %s, 输出文件数=%d, cost=%.3fs",
                 filename,
-                len(encoded_files),
+                original_output_count,
                 cost,
             )
 
@@ -130,6 +147,7 @@ class Handler(BaseHTTPRequestHandler):
                 "filename": filename,
                 "dir_name": dir_name,
                 "count": len(encoded_files),
+                "zip_original_count": original_output_count,
                 "output_files": {filename: encoded_files},
                 "cost_seconds": cost,
             }

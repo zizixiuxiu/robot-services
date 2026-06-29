@@ -82,13 +82,13 @@ def copy_sheet_to_writer(book, writer, sheet_name, new_name=None, skip_red=False
     old_sheet = book.sheet_by_name(sheet_name)
     new_sheet = writer.add_sheet(new_name or sheet_name)
     out_row = 0
+    blank_style = xlwt.XFStyle()
     for row in range(old_sheet.nrows):
         if skip_red and row > 0 and is_red_row(book, old_sheet, row):
             continue
         for col in range(old_sheet.ncols):
             value = old_sheet.cell_value(row, col)
-            style = xlwt.XFStyle()
-            new_sheet.write(out_row, col, value, style)
+            new_sheet.write(out_row, col, value, blank_style)
         out_row += 1
     return new_sheet
 
