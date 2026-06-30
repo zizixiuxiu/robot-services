@@ -388,6 +388,17 @@ def _send_output_pairs(chat_id: str, output_pairs, content_log: str, path_log: s
     return sent_count
 
 
+def _quantity_total_message(result: dict, port: int) -> str:
+    if port != 8005 or "quantity_total" not in result:
+        return ""
+    value = result.get("quantity_total")
+    if value in (None, ""):
+        return ""
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
+    return f"\n本次分类数量合计：{value}"
+
+
 def _process_batch(chat_id: str, port: int, service_name: str):
     """处理批量队列"""
     global _batch_queues, _batch_timers
@@ -421,6 +432,7 @@ def _process_batch(chat_id: str, port: int, service_name: str):
 
         count = total_count
         msg = f"✅ {service_name}批量处理完成，共处理 {len(queue)} 个文件，生成 {count} 个结果文件，请检查。"
+        msg += _quantity_total_message(result, port)
         warnings = []
         for res in result.get("results", []):
             w = res.get("warning")
@@ -602,6 +614,7 @@ def _process_file(chat_id: str, message_id: str, file_key: str, file_name: str, 
 
         count = sent_count
         msg = f"✅ {service_name}处理完成，共 {count} 个文件，请检查。"
+        msg += _quantity_total_message(result, port)
         warning = result.get("warning")
         if warning:
             msg += f"\n\n{warning}"

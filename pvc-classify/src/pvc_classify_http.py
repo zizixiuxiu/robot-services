@@ -148,6 +148,8 @@ class Handler(BaseHTTPRequestHandler):
                 "dir_name": dir_name,
                 "count": len(encoded_files),
                 "zip_original_count": original_output_count,
+                "quantity_total": result.get("quantity_total", 0),
+                "quantity_files": result.get("quantity_files", []),
                 "output_files": {filename: encoded_files},
                 "cost_seconds": cost,
             }
@@ -196,6 +198,7 @@ class Handler(BaseHTTPRequestHandler):
                     has_error = True
             total_cost = round(time.time() - t0, 3)
             total_output_count = sum(len(v) for v in all_output_files.values())
+            quantity_total = sum(float(res.get("quantity_total") or 0) for res in results if res.get("success"))
             logger.info(
                 "批量处理完成, 成功=%s, 输出文件数=%d, total_cost=%.3fs",
                 not has_error,
@@ -209,6 +212,7 @@ class Handler(BaseHTTPRequestHandler):
                 "count": len(files),
                 "results": results,
                 "output_files": all_output_files,
+                "quantity_total": int(quantity_total) if quantity_total.is_integer() else quantity_total,
                 "cost_seconds": total_cost,
             }
             if has_error:

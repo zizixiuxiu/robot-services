@@ -208,7 +208,7 @@ def process_input(src_path, dir_name=None, output_base=None, debug_output=False)
         auto_dir.mkdir(parents=True, exist_ok=True)
 
         print(f"\n  [Classify] Running classify_output...")
-        classify_output.process_file(str(final_output), str(auto_dir), str(REF_DIR), str(COLOR_MAP))
+        summary = classify_output.process_file(str(final_output), str(auto_dir), str(REF_DIR), str(COLOR_MAP)) or {}
 
         output_files = sorted([f for f in auto_dir.rglob('*.xls') if f.is_file()])
         result = {
@@ -216,6 +216,8 @@ def process_input(src_path, dir_name=None, output_base=None, debug_output=False)
             'auto_dir': str(auto_dir),
             'output_files': [str(f) for f in output_files],
             'count': len(output_files),
+            'quantity_total': summary.get('quantity_total', 0),
+            'quantity_files': summary.get('quantity_files', []),
         }
 
         # 调试模式：复制到 OUTPUT_BASE

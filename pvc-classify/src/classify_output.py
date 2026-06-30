@@ -505,6 +505,18 @@ def transform_huqiang_row(row, idx):
         str(row[6]) if len(row) > 6 else '',
     ]
 
+def to_number(value):
+    """Best-effort numeric conversion for quantity totals."""
+    if value in (None, ''):
+        return 0
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0
+
+def format_number(value):
+    return int(value) if isinstance(value, float) and value.is_integer() else value
+
 def get_template_file(output_dir, cat_type, existing_files, reference_dir=None):
     """Find a suitable template file in output_dir or reference_dir."""
     def find_template(files, directory):
@@ -868,6 +880,9 @@ def process_file(input_path, output_dir, reference_dir=None, color_map_path=None
     
     os.makedirs(output_dir, exist_ok=True)
     
+    quantity_files = []
+    quantity_total = 0.0
+
     for cat_name, cat_info in sorted(all_cats.items()):
         cat_type = cat_info['type']
         
@@ -937,11 +952,22 @@ def process_file(input_path, output_dir, reference_dir=None, color_map_path=None
         print(f"  Writing {filename}: {len(data_rows)} rows (type={cat_type}, template={template_path})")
         success = write_to_template(target_path, data_rows, material, template_path)
         if success:
+            file_total = sum(to_number(row[4] if len(row) > 4 else 0) for row in data_rows)
+            quantity_total += file_total
+            quantity_files.append({
+                'filename': filename,
+                'quantity_total': format_number(file_total),
+            })
             print(f"    [OK]")
         else:
             print(f"    [FAIL]")
     
     print(f"Completed. Total categories: {len(all_cats)}")
+    print(f"Quantity total: {format_number(quantity_total)}")
+    return {
+        'quantity_total': format_number(quantity_total),
+        'quantity_files': quantity_files,
+    }
 
 if __name__ == '__main__':
     if len(sys.argv) < 3:
