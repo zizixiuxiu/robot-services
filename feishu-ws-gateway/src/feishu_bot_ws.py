@@ -405,12 +405,11 @@ def _build_quantity_card(result: dict, service_name: str) -> dict | None:
     if not detail_rows:
         detail_rows = [{"filename": "合计", "quantity_total": value}]
 
-    rows = []
+    rows = [{"filename": "合计", "qty": str(value)}]
     for row in detail_rows:
         filename = row.get("filename", "")
         qty = _format_quantity_value(row.get("quantity_total", 0))
         rows.append({"filename": filename, "qty": str(qty)})
-    rows.append({"filename": "合计", "qty": str(value)})
 
     return {
         "config": {"wide_screen_mode": True},
