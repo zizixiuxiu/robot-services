@@ -38,6 +38,7 @@ $dockerServices = @(
     @("8004 csv-board", "D:\Services\robot-services\csv-board\deploy\docker\docker-compose.yml"),
     @("8005 pvc-classify", "D:\Services\robot-services\pvc-classify\deploy\docker\docker-compose.yml"),
     @("8006 workshop-order", "D:\Services\robot-services\workshop-order\deploy\docker\docker-compose.yml"),
+    @("8007 quote-maker", "D:\Services\robot-services\quote-maker\deploy\docker\docker-compose.yml"),
     @("8090 simple-ims", "D:\Services\robot-services\simple-ims\deploy\docker\docker-compose.yml"),
     @("feishu-ws-gateway", "D:\Services\robot-services\feishu-ws-gateway\deploy\docker\docker-compose.yml")
 )
@@ -68,6 +69,7 @@ $endpoints = @{
     8004 = "/health"
     8005 = "/health"
     8006 = "/health"
+    8007 = "/health"
     8090 = "/health"
 }
 

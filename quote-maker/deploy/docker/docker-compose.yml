@@ -1,0 +1,27 @@
+name: quote-maker
+
+services:
+  quote-maker:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+    container_name: quote-maker-8007
+    ports:
+      - "8007:8007"
+    volumes:
+      - ../../src:/app/src:ro
+      - ../../data/output:/app/data/output
+      - ../../logs:/app/logs
+    environment:
+      - PYTHONUNBUFFERED=1
+      - LOG_DIR=/app/logs
+      - OUTPUT_BASE=/app/data/output
+      - QUOTE_TEMPLATE=/app/src/templates/quote_template.xlsx
+      - QUOTE_MAX_WORKERS=1
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8007/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
