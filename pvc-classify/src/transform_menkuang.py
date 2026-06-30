@@ -380,13 +380,16 @@ def write_with_format(template_path, output_path, data_rows):
     wb = copy(book)
 
     try:
-        ws = wb.get_sheet("门框")
+        sheet_name = "门框"
+        ws = wb.get_sheet(sheet_name)
     except Exception:
+        sheet_name = book.sheet_by_index(0).name
         ws = wb.get_sheet(0)
+    source_ws = book.sheet_by_name(sheet_name)
 
     # 覆盖写入数据行，从第 2 行开始
+    total_cols = len(data_rows[0]) if data_rows else max(source_ws.ncols, 18)
     if data_rows:
-        total_cols = len(data_rows[0])
         for r_idx, row in enumerate(data_rows):
             for c_idx in range(total_cols):
                 value = row[c_idx] if c_idx < len(row) else ''
@@ -394,6 +397,11 @@ def write_with_format(template_path, output_path, data_rows):
                 if c_idx in (0, 8, 9, 15):
                     value = str(value)
                 ws.write(r_idx + 1, c_idx, value)
+
+    # 清掉模板残留旧数据，避免 P6-01 模板尾部行被后续分类当作本次输入。
+    for r_idx in range(len(data_rows) + 1, source_ws.nrows):
+        for c_idx in range(total_cols):
+            ws.write(r_idx, c_idx, '')
 
     wb.save(output_path)
 
