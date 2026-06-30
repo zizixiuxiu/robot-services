@@ -3,12 +3,13 @@
 独立飞书 Bot 网关 — WebSocket 模式（基于 lark_oapi.ws.Client）
 
 绕过 Gateway LLM，直接通过 lark_oapi 的 websocket 客户端接收飞书消息，
-文件消息路由到本地 HTTP 服务（8001/8002）处理。
+文件消息路由到本地 HTTP 服务（8001-8007）处理。
 
 群路由配置（chat_id → 服务端口）：
   oc_f74b3f332d275f70ba22b4332b5b442d → 8002 (order-split)
   oc_52ccbd9aa43c7abcfe9a8039c638e934 → 8001 (hardware-summary)
   oc_09e8345ee873ce43f52ca182770b56a5 → 测试群（同时支持两种，通过文件名判断）
+  FEISHU_QUOTE_CHAT_ID                  → 8007 (quote-maker，可选环境变量)
 
 运行：
   python feishu_bot_ws.py
@@ -89,6 +90,9 @@ CHAT_ROUTES = {
     "oc_51479339eef6b26fe9dcdcb8a5fb0c50": {"port": 8005, "name": "PVC分类"},
     "oc_c0986e7cea619374cfce226cbb199cc4": {"port": 8006, "name": "下车间单转换"},
 }
+
+for _chat_id in [x.strip() for x in os.getenv("FEISHU_QUOTE_CHAT_ID", "").split(",") if x.strip()]:
+    CHAT_ROUTES[_chat_id] = {"port": 8007, "name": "报价单生成"}
 
 # 经销商群文件配对队列：chat_id -> {"file_path": ..., "file_name": ..., "message_id": ..., "file_key": ..., "time": ...}
 _pending_files = {}
@@ -262,8 +266,10 @@ def _call_local_service(port: int, input_path: str, filename: str, order_date: s
 # ---------------------------------------------------------------------------
 
 def _detect_type_by_filename(filename: str) -> int:
-    """根据文件名判断路由端口，返回 8001 或 8002"""
+    """根据文件名判断测试群路由端口。"""
     name_lower = filename.lower()
+    if any(k in name_lower for k in ["拆单报价", "quote-maker", "make_quote", "quote"]):
+        return 8007
     if any(k in name_lower for k in ["五金", "hardware", "汇总", "马斌星"]):
         return 8001
     if any(k in name_lower for k in ["料单", "order", "split", "马忠义"]):
