@@ -168,13 +168,13 @@ def classify_menkuang_rows(rows, date_code, output_dir=None, reference_dir=None)
     """
     categories = {}
     for row in rows:
+        item_name = row[0] if len(row) > 0 else ''
         color = row[7] if len(row) > 7 else ''
         thickness = row[5] if len(row) > 5 else 28
-        gongyi = row[6] if len(row) > 6 else ''
         prefix = row[15] if len(row) > 15 else date_code
         base_color = extract_base_color(color)
         
-        if '隐形' in str(gongyi):
+        if '隐形门套' in str(item_name):
             # 隐形门套先单独分类，后续在 process_file 中决定是否合并到同颜色哑口套
             # 保留多层加密等工艺后缀，避免与普通哑口套错误合并
             suffix = '多层加密' if '多层加密' in str(color) else ''

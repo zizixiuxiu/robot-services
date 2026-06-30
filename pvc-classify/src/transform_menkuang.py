@@ -217,9 +217,10 @@ def read_and_transform(input_path):
             特殊要求 = get(row_data, '特殊要求')
             厚度 = get(row_data, '厚度')
             
-            # 判断隐形/静音门套
+            # 隐形门套只按“工件名称”列识别，特殊要求里出现“隐形”不再改类。
             ts_str = str(特殊要求) if 特殊要求 else ''
-            is_yinxing = '隐形' in ts_str
+            item_name_text = str(工件名称_raw) if 工件名称_raw else ''
+            is_yinxing = '隐形门套' in item_name_text
             # 静音芯板不等于静音门，仅当特殊要求含"静音门"时才视为静音门套
             is_jingyin = '静音门' in ts_str
             
