@@ -51,8 +51,15 @@ logger = logging.getLogger("quote-maker")
 
 def _safe_stem(filename: str) -> str:
     stem = Path(filename or "input.xls").stem.strip()
-    for suffix in ("拆单报价", "报价料单", "料单"):
-        stem = stem.replace(suffix, "")
+    suffixes = ("拆单报价", "报价料单", "报价单", "料单", "报价")
+    changed = True
+    while changed:
+        changed = False
+        for suffix in suffixes:
+            if stem.endswith(suffix):
+                stem = stem[: -len(suffix)].strip(" -_")
+                changed = True
+                break
     stem = stem.strip(" -_")
     return stem or "quote"
 
