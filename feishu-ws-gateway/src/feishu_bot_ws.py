@@ -388,27 +388,74 @@ def _send_output_pairs(chat_id: str, output_pairs, content_log: str, path_log: s
     return sent_count
 
 
-def _quantity_total_message(result: dict, port: int) -> str:
-    if port != 8005 or "quantity_total" not in result:
-        return ""
+def _format_quantity_value(value):
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    return value
+
+
+def _build_quantity_card(result: dict, service_name: str) -> dict | None:
+    if "quantity_total" not in result:
+        return None
     value = result.get("quantity_total")
     if value in (None, ""):
-        return ""
-    if isinstance(value, float) and value.is_integer():
-        value = int(value)
+        return None
+    value = _format_quantity_value(value)
     detail_rows = result.get("quantity_files") or []
     if not detail_rows:
-        return f"\n本次分类数量合计：{value}"
+        detail_rows = [{"filename": "合计", "quantity_total": value}]
 
-    lines = ["", "本次分类数量明细：", "文件 | 数量", "--- | ---"]
+    rows = []
     for row in detail_rows:
         filename = row.get("filename", "")
-        qty = row.get("quantity_total", 0)
-        if isinstance(qty, float) and qty.is_integer():
-            qty = int(qty)
-        lines.append(f"{filename} | {qty}")
-    lines.append(f"合计 | {value}")
-    return "\n".join(lines)
+        qty = _format_quantity_value(row.get("quantity_total", 0))
+        rows.append({"filename": filename, "qty": str(qty)})
+    rows.append({"filename": "合计", "qty": str(value)})
+
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "template": "green",
+            "title": {"tag": "plain_text", "content": f"{service_name}数量明细"},
+        },
+        "elements": [
+            {
+                "tag": "table",
+                "page_size": min(10, max(1, len(rows))),
+                "row_height": "low",
+                "freeze_first_column": False,
+                "header_style": {
+                    "text_align": "left",
+                    "text_size": "normal",
+                    "background_style": "grey",
+                    "text_color": "default",
+                    "bold": True,
+                    "lines": 1,
+                },
+                "columns": [
+                    {"name": "filename", "display_name": "文件", "data_type": "text", "width": "auto"},
+                    {"name": "qty", "display_name": "数量", "data_type": "text", "width": "auto"},
+                ],
+                "rows": rows,
+            }
+        ],
+    }
+
+
+def _send_quantity_card(chat_id: str, result: dict, port: int, service_name: str) -> bool:
+    if port != 8005:
+        return False
+    card = _build_quantity_card(result, service_name)
+    if not card:
+        return False
+    try:
+        _send_feishu_message(chat_id, "interactive", card)
+        return True
+    except Exception as e:
+        logger.error("[%s] 发送数量表格卡片失败: %s", chat_id, e, exc_info=True)
+        value = _format_quantity_value(result.get("quantity_total"))
+        _send_text(chat_id, f"本次分类数量合计：{value}")
+        return False
 
 
 def _process_batch(chat_id: str, port: int, service_name: str):
@@ -444,7 +491,6 @@ def _process_batch(chat_id: str, port: int, service_name: str):
 
         count = total_count
         msg = f"✅ {service_name}批量处理完成，共处理 {len(queue)} 个文件，生成 {count} 个结果文件，请检查。"
-        msg += _quantity_total_message(result, port)
         warnings = []
         for res in result.get("results", []):
             w = res.get("warning")
@@ -453,6 +499,7 @@ def _process_batch(chat_id: str, port: int, service_name: str):
         if warnings:
             msg += "\n\n" + "\n".join(warnings)
         _send_text(chat_id, msg)
+        _send_quantity_card(chat_id, result, port, service_name)
     except Exception as e:
         logger.exception("[%s] 批量处理异常", chat_id)
         _send_text(chat_id, f"❌ {service_name}批量处理异常：{str(e)}")
@@ -626,11 +673,11 @@ def _process_file(chat_id: str, message_id: str, file_key: str, file_name: str, 
 
         count = sent_count
         msg = f"✅ {service_name}处理完成，共 {count} 个文件，请检查。"
-        msg += _quantity_total_message(result, port)
         warning = result.get("warning")
         if warning:
             msg += f"\n\n{warning}"
         _send_text(chat_id, msg)
+        _send_quantity_card(chat_id, result, port, service_name)
 
     except Exception as e:
         logger.exception("[%s] 处理异常", chat_id)
