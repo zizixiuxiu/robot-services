@@ -104,6 +104,7 @@ def _process_order_split(input_path: str, output_dir: str) -> dict:
         "output_dir": output_dir,
         "count": len(out_files),
         "files": clean_files,
+        "_output_file_paths": [str(f) for f in out_files],
         "type": "order_split",
     }
     logger.info("文件处理完成: %s, 输出数=%d", input_path, len(out_files))
@@ -169,9 +170,11 @@ class Handler(BaseHTTPRequestHandler):
         result['cost_seconds'] = round(time.time() - t0, 3)
 
         if result.get('success'):
-            output_files = [
-                str(f) for f in sorted(Path(output_dir).rglob("*.xlsx")) + sorted(Path(output_dir).rglob("*.xls"))
-            ]
+            output_files = result.pop("_output_file_paths", None)
+            if output_files is None:
+                output_files = [
+                    str(f) for f in sorted(Path(output_dir).rglob("*.xlsx")) + sorted(Path(output_dir).rglob("*.xls"))
+                ]
             pair_key = str(Path(input_path).name)
             output_files_pair = []
             logger.info("准备构建 output_files, count=%d, output_dir=%s", len(output_files), output_dir)

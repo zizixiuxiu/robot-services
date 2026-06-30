@@ -13,6 +13,10 @@ import sys
 from pathlib import Path
 
 
+NUMBER_RE = re.compile(r"-?\d+(?:\.\d+)?")
+MATERIAL_THICKNESS_RE = re.compile(r"\d+(?:\.\d+)?(?=\s*mm)", re.IGNORECASE)
+
+
 OUTPUT_COLUMNS = [
     "合同自编号",
     "成型长",
@@ -40,7 +44,7 @@ def _extract_number(text):
     if text is None:
         return ""
     text = str(text).strip()
-    m = re.search(r"-?\d+(?:\.\d+)?", text)
+    m = NUMBER_RE.search(text)
     return m.group(0) if m else ""
 
 
@@ -66,7 +70,7 @@ def _replace_material_thickness(material, thickness):
     thickness = str(thickness).strip()
 
     # 如果已包含 "数字mm"，替换该数字
-    m = re.search(r"\d+(?:\.\d+)?(?=\s*mm)", material, re.IGNORECASE)
+    m = MATERIAL_THICKNESS_RE.search(material)
     if m:
         return material[:m.start()] + thickness + material[m.end():]
 
@@ -94,8 +98,7 @@ def convert_csv(input_path, output_path, input_encoding="utf-8-sig", output_enco
     if content is None:
         raise ValueError(f"无法解码输入文件: {input_path}")
 
-    reader = csv.DictReader(content.splitlines())
-    rows = list(reader)
+    rows = csv.DictReader(content.splitlines())
 
     converted = []
     for row in rows:

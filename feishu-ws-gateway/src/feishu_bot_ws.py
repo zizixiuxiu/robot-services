@@ -321,6 +321,67 @@ def _call_batch_service(port: int, files: list, order_date: str = None) -> dict:
         return json.loads(resp.read().decode("utf-8"))
 
 
+def _normalize_output_pairs(output_files):
+    """Return output files grouped in the same order as the service response."""
+    if isinstance(output_files, dict):
+        return list(output_files.values())
+    return [[item] for item in output_files]
+
+
+def _flatten_output_files(output_files):
+    if isinstance(output_files, dict):
+        flattened = []
+        for pair in output_files.values():
+            if isinstance(pair, list):
+                flattened.extend(pair)
+            else:
+                flattened.append(pair)
+        return flattened
+    return output_files
+
+
+def _send_output_item(chat_id: str, item, content_log: str, path_log: str, warn_missing: bool, exc_info: bool) -> int:
+    if isinstance(item, dict):
+        out_path = item.get("path", "")
+        filename = item.get("filename") or (os.path.basename(out_path) if out_path else "output.xlsx")
+        file_content_b64 = item.get("file_content")
+    else:
+        out_path = str(item)
+        filename = os.path.basename(out_path)
+        file_content_b64 = None
+
+    try:
+        if file_content_b64:
+            file_data = base64.b64decode(file_content_b64)
+            logger.info("[%s] %s: %s (%d bytes)", chat_id, content_log, filename, len(file_data))
+            fk = _upload_feishu_file_content(chat_id, filename, file_data)
+        else:
+            win_path = _wsl_to_win_path(out_path)
+            logger.info("[%s] %s: %s exists=%s", chat_id, path_log, win_path, os.path.exists(win_path))
+            if not os.path.exists(win_path):
+                if warn_missing:
+                    logger.warning("[%s] 输出文件不存在，跳过: %s", chat_id, win_path)
+                return 0
+            fk = _upload_feishu_file(chat_id, win_path)
+            filename = os.path.basename(win_path)
+        _send_file(chat_id, fk)
+        logger.info("[%s] 已发送文件: %s", chat_id, filename)
+        return 1
+    except Exception as e:
+        logger.error("[%s] 发送文件失败: %s", chat_id, e, exc_info=exc_info)
+        return 0
+
+
+def _send_output_pairs(chat_id: str, output_pairs, content_log: str, path_log: str, warn_missing: bool, exc_info: bool) -> int:
+    sent_count = 0
+    for pair in output_pairs:
+        for item in pair:
+            sent_count += _send_output_item(chat_id, item, content_log, path_log, warn_missing, exc_info)
+        # Keep a short pause between pairs so Feishu preserves the visible order.
+        time.sleep(0.5)
+    return sent_count
+
+
 def _process_batch(chat_id: str, port: int, service_name: str):
     """处理批量队列"""
     global _batch_queues, _batch_timers
@@ -347,47 +408,10 @@ def _process_batch(chat_id: str, port: int, service_name: str):
             return
 
         # 支持成对返回：dict {原始文件名: [file1, file2, ...]} 或旧格式列表
-        if isinstance(output_files, dict):
-            output_pairs = list(output_files.values())
-        else:
-            output_pairs = [[item] for item in output_files]
-
+        output_pairs = _normalize_output_pairs(output_files)
         total_count = sum(len(pair) for pair in output_pairs)
         logger.info("[%s] 准备发送 %d 对输出文件，共 %d 个文件", chat_id, len(output_pairs), total_count)
-        for pair in output_pairs:
-            for item in pair:
-                # 兼容旧格式：字符串路径；新格式：{"path": ..., "filename": ..., "file_content": base64}
-                if isinstance(item, dict):
-                    out_path = item.get("path", "")
-                    filename = item.get("filename") or (os.path.basename(out_path) if out_path else "output.xlsx")
-                    file_content_b64 = item.get("file_content")
-                else:
-                    out_path = str(item)
-                    filename = os.path.basename(out_path)
-                    file_content_b64 = None
-
-                try:
-                    if file_content_b64:
-                        # 容器/Docker 模式：直接返回文件内容
-                        file_data = base64.b64decode(file_content_b64)
-                        logger.info("[%s] 从返回内容上传文件: %s (%d bytes)", chat_id, filename, len(file_data))
-                        fk = _upload_feishu_file_content(chat_id, filename, file_data)
-                    else:
-                        # 旧模式：从 Windows/WSL 路径读取文件
-                        win_path = _wsl_to_win_path(out_path)
-                        logger.info("[%s] 检查输出文件: %s -> %s exists=%s", chat_id, out_path, win_path, os.path.exists(win_path))
-                        if not os.path.exists(win_path):
-                            logger.warning("[%s] 输出文件不存在，跳过: %s", chat_id, win_path)
-                            continue
-                        logger.info("[%s] 开始上传文件: %s", chat_id, win_path)
-                        fk = _upload_feishu_file(chat_id, win_path)
-                    logger.info("[%s] 上传成功 file_key=%s", chat_id, fk)
-                    _send_file(chat_id, fk)
-                    logger.info("[%s] 已发送文件: %s", chat_id, filename)
-                except Exception as e:
-                    logger.error("[%s] 发送文件失败: %s", chat_id, e, exc_info=True)
-            # 每对文件发送后稍作停顿，避免飞书消息顺序错乱
-            time.sleep(0.5)
+        _send_output_pairs(chat_id, output_pairs, "从返回内容上传文件", "检查输出文件", True, True)
 
         count = total_count
         msg = f"✅ {service_name}批量处理完成，共处理 {len(queue)} 个文件，生成 {count} 个结果文件，请检查。"
@@ -509,41 +533,8 @@ def _handle_dealer_file(chat_id: str, message_id: str, file_key: str, file_name:
             return
 
         # 支持成对返回：dict {原始文件名: [file1, file2, ...]} 或旧格式列表
-        if isinstance(output_files, dict):
-            output_pairs = list(output_files.values())
-        else:
-            output_pairs = [[item] for item in output_files]
-
-        sent_count = 0
-        for pair in output_pairs:
-            for item in pair:
-                if isinstance(item, dict):
-                    out_path = item.get("path", "")
-                    filename = item.get("filename") or (os.path.basename(out_path) if out_path else "output.xlsx")
-                    file_content_b64 = item.get("file_content")
-                else:
-                    out_path = str(item)
-                    filename = os.path.basename(out_path)
-                    file_content_b64 = None
-
-                try:
-                    if file_content_b64:
-                        file_data = base64.b64decode(file_content_b64)
-                        logger.info("[%s] 从返回内容上传: %s (%d bytes)", chat_id, filename, len(file_data))
-                        fk = _upload_feishu_file_content(chat_id, filename, file_data)
-                    else:
-                        win_path = _wsl_to_win_path(out_path)
-                        if not os.path.exists(win_path):
-                            continue
-                        fk = _upload_feishu_file(chat_id, win_path)
-                        filename = os.path.basename(win_path)
-                    _send_file(chat_id, fk)
-                    logger.info("[%s] 已发送文件: %s", chat_id, filename)
-                    sent_count += 1
-                except Exception as e:
-                    logger.error("[%s] 发送文件失败: %s", chat_id, e)
-            # 每对文件发送后稍作停顿，避免飞书消息顺序错乱
-            time.sleep(0.5)
+        output_pairs = _normalize_output_pairs(output_files)
+        sent_count = _send_output_pairs(chat_id, output_pairs, "从返回内容上传", "检查输出文件", False, False)
 
         _send_text(chat_id, f"✅ {service_name}处理完成，共 {sent_count} 个文件，请检查。")
     except Exception as e:
@@ -595,43 +586,9 @@ def _process_file(chat_id: str, message_id: str, file_key: str, file_name: str, 
 
         # 兼容 output_files 模式（字符串路径、dict 列表，或 {原始文件名: [file, ...]} 字典）
         raw_output_files = result.get("output_files", [])
-        if isinstance(raw_output_files, dict):
-            output_files = []
-            for pair in raw_output_files.values():
-                if isinstance(pair, list):
-                    output_files.extend(pair)
-                else:
-                    output_files.append(pair)
-        else:
-            output_files = raw_output_files
-
+        output_files = _flatten_output_files(raw_output_files)
         for item in output_files:
-            if isinstance(item, dict):
-                out_path = item.get("path", "")
-                filename = item.get("filename") or (os.path.basename(out_path) if out_path else "output.xlsx")
-                file_content_b64 = item.get("file_content")
-            else:
-                out_path = str(item)
-                filename = os.path.basename(out_path)
-                file_content_b64 = None
-
-            try:
-                if file_content_b64:
-                    file_data = base64.b64decode(file_content_b64)
-                    logger.info("[%s] 从 output_files 内容上传: %s (%d bytes)", chat_id, filename, len(file_data))
-                    fk = _upload_feishu_file_content(chat_id, filename, file_data)
-                else:
-                    win_path = _wsl_to_win_path(out_path)
-                    logger.info("[%s] 检查 output_files: %s exists=%s", chat_id, win_path, os.path.exists(win_path))
-                    if not os.path.exists(win_path):
-                        continue
-                    fk = _upload_feishu_file(chat_id, win_path)
-                    filename = os.path.basename(win_path)
-                _send_file(chat_id, fk)
-                logger.info("[%s] 已发送文件: %s", chat_id, filename)
-                sent_count += 1
-            except Exception as e:
-                logger.error("[%s] 发送文件失败: %s", chat_id, e, exc_info=True)
+            sent_count += _send_output_item(chat_id, item, "从 output_files 内容上传", "检查 output_files", False, True)
 
         if sent_count == 0 and not output_content and not output_files:
             _send_text(chat_id, "⚠️ 处理完成但未生成文件")

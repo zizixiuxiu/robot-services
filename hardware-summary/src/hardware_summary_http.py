@@ -50,6 +50,32 @@ def _get_today_date():
     return f"{now.year}.{now.month}.{now.day}"
 
 
+def _encode_output_file(file_path: Path, filename: str = None) -> dict:
+    try:
+        with open(file_path, 'rb') as fh:
+            b64 = base64.b64encode(fh.read()).decode('utf-8')
+        return {
+            "path": str(file_path),
+            "filename": filename or file_path.name,
+            "file_content": b64,
+        }
+    except Exception as e:
+        logger.error("读取输出文件失败: %s, error=%s", file_path, e)
+        return {
+            "path": str(file_path),
+            "filename": filename or file_path.name,
+            "error": f"读取文件内容失败: {e}",
+        }
+
+
+def _encode_output_files(file_paths: list[Path]) -> list[dict]:
+    max_workers = max(1, int(os.getenv("HARDWARE_ENCODE_MAX_WORKERS", "2")))
+    if len(file_paths) <= 1 or max_workers == 1:
+        return [_encode_output_file(path) for path in file_paths]
+    with ThreadPoolExecutor(max_workers=min(len(file_paths), max_workers)) as executor:
+        return list(executor.map(_encode_output_file, file_paths))
+
+
 def _process_hardware_summary(input_path: str, output_dir: str, order_date: str = None) -> dict:
     """处理单个五金汇总"""
     logger.info("开始处理文件: %s -> %s", input_path, output_dir)
@@ -158,25 +184,9 @@ class Handler(BaseHTTPRequestHandler):
 
         if result.get('success'):
             pair_key = str(Path(input_path).name)
-            output_files_pair = []
-            for f in result['files']:
-                file_path = str(Path(output_dir) / f)
-                try:
-                    with open(file_path, 'rb') as fh:
-                        b64 = base64.b64encode(fh.read()).decode('utf-8')
-                    output_files_pair.append({
-                        "path": file_path,
-                        "filename": f,
-                        "file_content": b64,
-                    })
-                    logger.info("输出文件已编码: %s", f)
-                except Exception as e:
-                    logger.error("读取输出文件失败: %s, error=%s", file_path, e)
-                    output_files_pair.append({
-                        "path": file_path,
-                        "filename": f,
-                        "error": f"读取文件内容失败: {e}",
-                    })
+            output_files_pair = _encode_output_files([Path(output_dir) / f for f in result['files']])
+            for item in output_files_pair:
+                logger.info("输出文件已编码: %s", item.get("filename"))
             result['output_files'] = {
                 pair_key: output_files_pair
             }

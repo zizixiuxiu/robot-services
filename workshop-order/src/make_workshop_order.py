@@ -6,7 +6,7 @@ Convert an original quotation workbook into a workshop-order workbook.
 Rules implemented:
 1. Tiepi orders use the full workshop conversion rules.
 2. Hunyou orders only clear wood-box packaging and color-adjustment fee rows.
-3. Legacy .xls files are converted through pandas before processing (Excel COM not available in Docker).
+3. Legacy .xls files are converted through LibreOffice before processing so formatting is preserved.
 
 Usage:
     python make_workshop_order.py input.xlsx
@@ -24,7 +24,6 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-import pandas as pd
 from openpyxl import load_workbook
 from openpyxl.cell.cell import MergedCell
 from openpyxl.formula.translate import Translator
@@ -206,7 +205,7 @@ def detect_order_type(wb: Any, requested: str) -> str:
                 current_color = raw_color
             color = current_color
 
-            if KW_HUNYOU in color:
+            if color.startswith(KW_HUNYOU):
                 return "hunyou"
     return "tiepi"
 
@@ -537,7 +536,7 @@ def transform(input_path: Path, output_path: Path, discount: float, order_type: 
                 if not product or KW_TOTAL in product or isinstance(price_cell, MergedCell):
                     continue
 
-                if KW_HUNYOU in color:
+                if resolved_order_type == "hunyou":
                     continue
 
                 price = get_price_value(price_cell, cached_price_cell)
@@ -562,8 +561,6 @@ def transform(input_path: Path, output_path: Path, discount: float, order_type: 
                         if new_formula != value:
                             cell.value = new_formula
                             stats["summary_constants_removed"] += 1
-                    elif resolved_order_type == "hunyou":
-                        continue
                     elif any(keyword in value for keyword in DROP_NOTE_KEYWORDS):
                         cell.value = None
                         stats["cleared_bottom_notes"] += 1
@@ -572,6 +569,8 @@ def transform(input_path: Path, output_path: Path, discount: float, order_type: 
                         if new_value != value:
                             cell.value = new_value
                             stats["updated_page_notes"] += 1
+                    elif resolved_order_type == "hunyou":
+                        continue
 
             stats["deleted_blank_rows"] += delete_blank_rows_between_data_and_summary(wb, ws, header_row)
 
@@ -592,16 +591,41 @@ def transform(input_path: Path, output_path: Path, discount: float, order_type: 
 
 
 def convert_xls_to_xlsx(input_path: Path, output_path: Path) -> None:
-    """Convert legacy .xls to .xlsx using pandas (Excel COM unavailable in Docker).
+    """Convert legacy .xls to .xlsx while preserving workbook formatting.
 
-    header=None keeps the original sheet layout; otherwise pandas would treat the
-    first row as column headers and drop/report rows above it.
+    Docker/Linux cannot use Excel COM. LibreOffice headless keeps styles,
+    merged cells, column widths, images and sheet layout far better than a
+    pandas data-frame rewrite. If LibreOffice is unavailable or fails, raise a
+    clear error instead of silently producing a data-only workbook.
     """
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    sheets = pd.read_excel(input_path, sheet_name=None, engine="xlrd", header=None)
-    with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
-        for sheet_name, df in sheets.items():
-            df.to_excel(writer, sheet_name=sheet_name, index=False, header=False)
+
+    with tempfile.TemporaryDirectory(prefix="xls_convert_") as tmp:
+        tmpdir = Path(tmp)
+        cmd = [
+            "soffice",
+            "--headless",
+            "--convert-to",
+            "xlsx",
+            "--outdir",
+            str(tmpdir),
+            str(input_path),
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or "").strip()
+            raise RuntimeError(f"LibreOffice failed to convert .xls to .xlsx: {detail}")
+
+        converted = tmpdir / f"{input_path.stem}.xlsx"
+        if not converted.exists():
+            candidates = list(tmpdir.glob("*.xlsx"))
+            if len(candidates) == 1:
+                converted = candidates[0]
+            else:
+                detail = (result.stderr or result.stdout or "").strip()
+                raise RuntimeError(f"LibreOffice did not create an .xlsx file: {detail}")
+
+        output_path.write_bytes(converted.read_bytes())
 
 
 def default_output_path(input_path: Path) -> Path:
