@@ -823,7 +823,7 @@ def fill_hardware_sheets(wb, hardware_items: list[HardwareItem]) -> None:
     # sheet and stay as 4-column merges; use the same column widths.
     ws["L3"] = "=+'1'!M2"
     ws["L4"] = "='1'!E3"
-    for coord in ("L3", "L4"):
+    for coord in ("J3", "J4", "L3", "L4"):
         ws[coord].alignment = Alignment(horizontal="center", vertical="center")
     ws.column_dimensions["J"].width = 4.5
     ws.column_dimensions["K"].width = 13.0
@@ -861,8 +861,8 @@ def fill_hardware_sheets(wb, hardware_items: list[HardwareItem]) -> None:
 
 def restore_hardware_merges(ws: Worksheet) -> None:
     merge_ranges = [
-        "A1:T2", "A3:B4", "C3:C4", "D3:G3", "H3:I3", "L3:O3", "P3:R3",
-        "D4:G4", "H4:I4", "L4:O4", "P4:R4",
+        "A1:T2", "A3:B4", "C3:C4", "D3:G3", "H3:I3", "J3:K3", "L3:O3", "P3:R3",
+        "D4:G4", "H4:I4", "J4:K4", "L4:O4", "P4:R4",
         "B5:H5", "J5:K5", "L5:N5", "O5:P5", "S5:T5",
         "A26:E26", "F26:H26", "J26:P26", "S26:T26",
         "A27:H27", "I27:K27", "A28:T28",
