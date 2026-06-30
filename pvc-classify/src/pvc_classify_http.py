@@ -199,6 +199,10 @@ class Handler(BaseHTTPRequestHandler):
             total_cost = round(time.time() - t0, 3)
             total_output_count = sum(len(v) for v in all_output_files.values())
             quantity_total = sum(float(res.get("quantity_total") or 0) for res in results if res.get("success"))
+            quantity_files = []
+            for res in results:
+                if res.get("success"):
+                    quantity_files.extend(res.get("quantity_files") or [])
             logger.info(
                 "批量处理完成, 成功=%s, 输出文件数=%d, total_cost=%.3fs",
                 not has_error,
@@ -213,6 +217,7 @@ class Handler(BaseHTTPRequestHandler):
                 "results": results,
                 "output_files": all_output_files,
                 "quantity_total": int(quantity_total) if quantity_total.is_integer() else quantity_total,
+                "quantity_files": quantity_files,
                 "cost_seconds": total_cost,
             }
             if has_error:

@@ -396,7 +396,19 @@ def _quantity_total_message(result: dict, port: int) -> str:
         return ""
     if isinstance(value, float) and value.is_integer():
         value = int(value)
-    return f"\n本次分类数量合计：{value}"
+    detail_rows = result.get("quantity_files") or []
+    if not detail_rows:
+        return f"\n本次分类数量合计：{value}"
+
+    lines = ["", "本次分类数量明细：", "文件 | 数量", "--- | ---"]
+    for row in detail_rows:
+        filename = row.get("filename", "")
+        qty = row.get("quantity_total", 0)
+        if isinstance(qty, float) and qty.is_integer():
+            qty = int(qty)
+        lines.append(f"{filename} | {qty}")
+    lines.append(f"合计 | {value}")
+    return "\n".join(lines)
 
 
 def _process_batch(chat_id: str, port: int, service_name: str):
