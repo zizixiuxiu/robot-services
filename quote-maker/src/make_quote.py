@@ -162,6 +162,14 @@ class HardwareItem:
     qty: Any
 
 
+@dataclass
+class SheetStyleSnapshot:
+    max_row: int
+    max_column: int
+    row_heights: dict[int, Any]
+    styles: dict[tuple[int, int], Any]
+
+
 def clean_number(value: Any) -> Any:
     if isinstance(value, float) and value.is_integer():
         return int(value)
@@ -250,18 +258,26 @@ def group_by_area(items: list[Item], exclude_areas: set[str] | None = None) -> l
 def copy_cell(src, dst) -> None:
     if src.has_style:
         dst._style = copy.copy(src._style)
-    if src.number_format:
-        dst.number_format = src.number_format
-    if src.font:
-        dst.font = copy.copy(src.font)
-    if src.fill:
-        dst.fill = copy.copy(src.fill)
-    if src.border:
-        dst.border = copy.copy(src.border)
-    if src.alignment:
-        dst.alignment = copy.copy(src.alignment)
-    if src.protection:
-        dst.protection = copy.copy(src.protection)
+
+
+def copy_style(style, dst) -> None:
+    if style is not None:
+        dst._style = copy.copy(style)
+
+
+def capture_sheet_style(ws: Worksheet) -> SheetStyleSnapshot:
+    styles: dict[tuple[int, int], Any] = {}
+    for row in range(1, ws.max_row + 1):
+        for col in range(1, ws.max_column + 1):
+            cell = ws.cell(row, col)
+            if cell.has_style:
+                styles[(row, col)] = copy.copy(cell._style)
+    return SheetStyleSnapshot(
+        max_row=ws.max_row,
+        max_column=ws.max_column,
+        row_heights={row: ws.row_dimensions[row].height for row in range(1, ws.max_row + 1)},
+        styles=styles,
+    )
 
 
 def copy_row_style(ws: Worksheet, src_row: int, dst_row: int) -> None:
@@ -270,8 +286,13 @@ def copy_row_style(ws: Worksheet, src_row: int, dst_row: int) -> None:
         copy_cell(ws.cell(src_row, col), ws.cell(dst_row, col))
 
 
-def apply_sheet_style_from_template(ws: Worksheet, template_ws: Worksheet, insert_at: int, delta: int) -> None:
-    max_col = min(ws.max_column, template_ws.max_column)
+def apply_sheet_style_from_template(
+    ws: Worksheet,
+    template_style: SheetStyleSnapshot,
+    insert_at: int,
+    delta: int,
+) -> None:
+    max_col = min(ws.max_column, template_style.max_column)
     for row in range(1, ws.max_row + 1):
         if 8 <= row < insert_at + delta:
             src_row = min(row, insert_at - 1)
@@ -279,11 +300,11 @@ def apply_sheet_style_from_template(ws: Worksheet, template_ws: Worksheet, inser
             src_row = row - delta
         else:
             src_row = row
-        if src_row < 1 or src_row > template_ws.max_row:
+        if src_row < 1 or src_row > template_style.max_row:
             continue
-        ws.row_dimensions[row].height = template_ws.row_dimensions[src_row].height
+        ws.row_dimensions[row].height = template_style.row_heights.get(src_row)
         for col in range(1, max_col + 1):
-            copy_cell(template_ws.cell(src_row, col), ws.cell(row, col))
+            copy_style(template_style.styles.get((src_row, col)), ws.cell(row, col))
 
 
 def clone_sheet_layout(wb, template_sheet: Worksheet, title: str, before_sheet: Worksheet) -> Worksheet:
@@ -668,7 +689,8 @@ def build_workbook_input_only(input_path: Path, template_path: Path, output_path
     header = read_input_header(input_path)
 
     wb = openpyxl.load_workbook(template_path)
-    style_wb = openpyxl.load_workbook(template_path)
+    first_page_style = capture_sheet_style(wb["1"])
+    other_page_style = capture_sheet_style(wb["2"])
     total_pages = len(groups)
     if total_pages < 1:
         raise ValueError("No rows found in 实木附件")
@@ -686,7 +708,7 @@ def build_workbook_input_only(input_path: Path, template_path: Path, output_path
 
     for idx, (area, items) in enumerate(groups, start=1):
         ws = wb[str(idx)]
-        style_template_ws = style_wb["1"] if idx == 1 else style_wb["2"]
+        style_template_ws = first_page_style if idx == 1 else other_page_style
         fill_page_input_only(ws, idx, area, items, total_pages, style_template_ws, header)
     fill_hardware_sheets(wb, hardware_items)
     if "_hardware_template" in wb.sheetnames:
@@ -1125,7 +1147,8 @@ def apply_quote_page_background(workbook_path: Path) -> None:
 def build_workbook(input_path: Path, template_path: Path, output_path: Path) -> None:
     groups = group_by_area(read_items(input_path))
     wb = openpyxl.load_workbook(template_path)
-    style_wb = openpyxl.load_workbook(template_path)
+    first_page_style = capture_sheet_style(wb["1"])
+    other_page_style = capture_sheet_style(wb["2"])
     total_pages = len(groups)
     if total_pages < 1:
         raise ValueError("No rows found in 实木附件")
@@ -1142,7 +1165,7 @@ def build_workbook(input_path: Path, template_path: Path, output_path: Path) -> 
     subtotal_rows: dict[int, int] = {}
     for idx, (area, items) in enumerate(groups, start=1):
         ws = wb[str(idx)]
-        style_template_ws = style_wb["1"] if idx == 1 else style_wb["2"]
+        style_template_ws = first_page_style if idx == 1 else other_page_style
         subtotal_rows[idx] = fill_page(ws, idx, area, items, total_pages, style_template_ws)
 
     rewrite_first_page_total(wb["1"], subtotal_rows)
