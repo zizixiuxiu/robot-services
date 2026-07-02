@@ -1,0 +1,25 @@
+name: dealer-report
+
+services:
+  dealer-report:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+    container_name: dealer-report-8008
+    ports:
+      - "8008:8008"
+    volumes:
+      - ../../src:/app/src:ro
+      - ../../data/output:/app/data/output
+      - ../../logs:/app/logs
+    environment:
+      - PYTHONUNBUFFERED=1
+      - OUTPUT_DIR=/app/data/output
+      - LOG_DIR=/app/logs
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8008/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
