@@ -300,6 +300,16 @@ def _service_name_for_port(port: int, fallback: str = "单文件处理") -> str:
     }.get(port, fallback)
 
 
+def _detect_dealer_report_type(file_name: str) -> str:
+    """识别 经销商数据报表文件类型"""
+    name = file_name.lower()
+    if "账号指标" in name or "账号信息" in name:
+        return "account"
+    if "设计师数据统计" in name or "设计师" in name:
+        return "designer"
+    return "unknown"
+
+
 # ---------------------------------------------------------------------------
 # 文件处理
 # ---------------------------------------------------------------------------
@@ -637,7 +647,112 @@ def _handle_dealer_file(chat_id: str, message_id: str, file_key: str, file_name:
         _send_text(chat_id, f"❌ 处理异常：{str(e)}")
     finally:
         # 清理持久化文件
+        # 清理持久化文件
         shutil.rmtree(save_dir, ignore_errors=True)
+
+
+def _handle_dealer_report_file(chat_id: str, message_id: str, file_key: str, file_name: str, local_path: str, service_name: str):
+    """处理经销商数据报表群文件：收集账号指标 + 设计师数据统计两个文件后调用 8008"""
+    global _pending_files, _pending_files_locks
+
+    ftype = _detect_dealer_report_type(file_name)
+    if ftype == "unknown":
+        _send_text(chat_id, f"⚠️ 无法识别文件「{file_name}」，文件名需包含：账号指标、账号信息、设计师数据统计、设计师")
+        return
+
+    if chat_id not in _pending_files_locks:
+        _pending_files_locks[chat_id] = threading.Lock()
+    lock = _pending_files_locks[chat_id]
+
+    with lock:
+        save_dir = Path(tempfile.gettempdir()) / f"dealer_report_pending_{chat_id}"
+        save_dir.mkdir(exist_ok=True)
+        save_path = save_dir / file_name
+        shutil.copy(local_path, save_path)
+
+        if chat_id not in _pending_files:
+            _pending_files[chat_id] = {}
+
+        _pending_files[chat_id][ftype] = {
+            "file_path": str(save_path),
+            "file_name": file_name,
+            "message_id": message_id,
+            "file_key": file_key,
+            "time": time.time(),
+        }
+
+        required = {"account", "designer"}
+        collected = set(_pending_files[chat_id].keys())
+        missing = required - collected
+
+        if missing:
+            missing_names = []
+            if "account" in missing:
+                missing_names.append("账号指标/账号信息")
+            if "designer" in missing:
+                missing_names.append("设计师数据统计")
+            _send_text(chat_id, f"✅ 已收到【{file_name}】，还缺少：{'、'.join(missing_names)}，请继续上传。")
+            return
+
+        files = {key: _pending_files[chat_id][key] for key in required}
+        del _pending_files[chat_id]
+
+    logger.info("[%s] 经销商数据报表文件凑齐，开始处理: %s", chat_id, [f["file_name"] for f in files.values()])
+    try:
+        result = _call_dealer_report_service(
+            chat_id,
+            files["account"]["file_path"],
+            files["designer"]["file_path"],
+            files["account"]["file_name"],
+            files["designer"]["file_name"],
+        )
+        logger.info("[%s] 处理结果: %s", chat_id, result.get("success"))
+
+        if not result.get("success"):
+            _send_text(chat_id, f"❌ 处理失败：{result.get('error', '未知错误')}")
+            return
+
+        output_files = result.get("output_files", [])
+        if not output_files:
+            _send_text(chat_id, "⚠️ 处理完成但未生成文件")
+            return
+
+        sent_count = 0
+        for item in output_files:
+            if isinstance(item, dict):
+                out_path = item.get("path", "")
+                filename = item.get("filename") or (os.path.basename(out_path) if out_path else "output.xlsx")
+                file_content_b64 = item.get("file_content")
+            else:
+                out_path = str(item)
+                filename = os.path.basename(out_path)
+                file_content_b64 = None
+
+            try:
+                if file_content_b64:
+                    file_data = base64.b64decode(file_content_b64)
+                    logger.info("[%s] 从返回内容上传: %s (%d bytes)", chat_id, filename, len(file_data))
+                    fk = _upload_feishu_file_content(chat_id, filename, file_data)
+                else:
+                    win_path = _wsl_to_win_path(out_path)
+                    if not os.path.exists(win_path):
+                        continue
+                    fk = _upload_feishu_file(chat_id, win_path)
+                    filename = os.path.basename(win_path)
+                _send_file(chat_id, fk)
+                logger.info("[%s] 已发送文件: %s", chat_id, filename)
+                sent_count += 1
+            except Exception as e:
+                logger.error("[%s] 发送文件失败: %s", chat_id, e)
+            time.sleep(0.5)
+
+        _send_text(chat_id, f"✅ {service_name}处理完成，共 {sent_count} 个文件，请检查。")
+    except Exception as e:
+        logger.exception("[%s] 处理异常", chat_id)
+        _send_text(chat_id, f"❌ 处理异常：{str(e)}")
+    finally:
+        shutil.rmtree(save_dir, ignore_errors=True)
+
 
 def _process_file(chat_id: str, message_id: str, file_key: str, file_name: str, port: int, service_name: str):
     """后台处理文件"""
@@ -652,6 +767,10 @@ def _process_file(chat_id: str, message_id: str, file_key: str, file_name: str, 
             _handle_dealer_file(chat_id, message_id, file_key, file_name, local_path, service_name)
             return
 
+        # 经销商数据报表群：双文件配对逻辑
+        if port == 8008:
+            _handle_dealer_report_file(chat_id, message_id, file_key, file_name, local_path, service_name)
+            return
         order_date = f"{datetime.now().year}.{datetime.now().month}.{datetime.now().day}"
         result = _call_local_service(port, local_path, file_name, order_date)
         logger.info("[%s] 处理结果: %s", chat_id, result.get("success"))
@@ -763,8 +882,8 @@ def _on_message_receive(data) -> None:
             ).start()
             return
 
-        if port in (8001, 8002, 8008):
-            # 五金汇总 / 报价料单 / 酷家乐月度经销商数据：批量收集逻辑
+        if port in (8001, 8002):
+            # 五金汇总 / 报价料单：批量收集逻辑
             logger.info("[%s] 收到文件: %s → 路由到 %s (%d) 批量收集", chat_id, file_name, service_name, port)
 
             # 下载文件到持久化目录
