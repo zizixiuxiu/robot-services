@@ -856,23 +856,29 @@ def unmerge_hardware_remark_blocks(ws: Worksheet) -> None:
 
 
 def merge_hardware_remark_blocks(ws: Worksheet, hardware_items: list[HardwareItem]) -> None:
-    if not hardware_items:
-        return
     unmerge_hardware_remark_blocks(ws)
+    item_count = min(len(hardware_items), 20)
+    if item_count < 1:
+        for row in range(6, 26):
+            ws.merge_cells(f"S{row}:T{row}")
+        return
 
     start_row = 6
-    current_area = hardware_items[0].area
-    for idx, item in enumerate(hardware_items[:20], start=1):
+    current_remark = hardware_items[0].area
+    for idx, item in enumerate(hardware_items[:item_count], start=1):
         row = 5 + idx
-        if item.area != current_area:
+        if item.area != current_remark:
             end_row = row - 1
             ws.merge_cells(f"S{start_row}:T{end_row}")
             ws.cell(start_row, 19).alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
             start_row = row
-            current_area = item.area
-    end_row = 5 + min(len(hardware_items), 20)
+            current_remark = item.area
+    end_row = 5 + item_count
     ws.merge_cells(f"S{start_row}:T{end_row}")
     ws.cell(start_row, 19).alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    for row in range(end_row + 1, 26):
+        ws.merge_cells(f"S{row}:T{row}")
+        ws.cell(row, 19).alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
 
 
 def find_sheet_by_name(wb, name: str):
@@ -942,8 +948,7 @@ def fill_hardware_sheets(wb, hardware_items: list[HardwareItem]) -> None:
         ws.cell(row, 15).value = item.width
         ws.cell(row, 17).value = hardware_price(item.name)
         ws.cell(row, 18).value = hardware_total_formula(row, item.name)
-        previous_area = hardware_items[idx - 2].area if idx > 1 else None
-        ws.cell(row, 19).value = item.area if item.area != previous_area else None
+        ws.cell(row, 19).value = item.area
     merge_hardware_remark_blocks(ws, hardware_items)
     if "\u4e94\u91d1-2" in wb.sheetnames:
         wb["\u4e94\u91d1-2"].sheet_state = "hidden"
