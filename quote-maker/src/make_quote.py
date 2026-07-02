@@ -184,12 +184,38 @@ def get_bom_sheet(book, preferred_name: str, fallback_index: int):
     return book.sheet_by_index(fallback_index)
 
 
+def open_workbook_with_merges(input_path: Path):
+    try:
+        return xlrd.open_workbook(str(input_path), formatting_info=True)
+    except (NotImplementedError, xlrd.XLRDError):
+        return xlrd.open_workbook(str(input_path), formatting_info=False)
+
+
+def merged_cell_lookup(sheet) -> dict[tuple[int, int], tuple[int, int]]:
+    lookup: dict[tuple[int, int], tuple[int, int]] = {}
+    for row_start, row_end, col_start, col_end in getattr(sheet, "merged_cells", []):
+        for row_idx in range(row_start, row_end):
+            for col_idx in range(col_start, col_end):
+                lookup[(row_idx, col_idx)] = (row_start, col_start)
+    return lookup
+
+
+def cell_value_with_merges(sheet, row_idx: int, col_idx: int, lookup: dict[tuple[int, int], tuple[int, int]]) -> Any:
+    source_row, source_col = lookup.get((row_idx, col_idx), (row_idx, col_idx))
+    return sheet.cell_value(source_row, source_col)
+
+
+def row_values_with_merges(sheet, row_idx: int, lookup: dict[tuple[int, int], tuple[int, int]]) -> list[Any]:
+    return [cell_value_with_merges(sheet, row_idx, col_idx, lookup) for col_idx in range(sheet.ncols)]
+
+
 def read_items(input_path: Path) -> list[Item]:
-    book = xlrd.open_workbook(str(input_path), formatting_info=False)
+    book = open_workbook_with_merges(input_path)
     sheet = get_bom_sheet(book, "实木附件", 1)
+    lookup = merged_cell_lookup(sheet)
     items: list[Item] = []
     for row_idx in range(7, sheet.nrows):
-        row = [sheet.cell_value(row_idx, col) for col in range(sheet.ncols)]
+        row = row_values_with_merges(sheet, row_idx, lookup)
         if not row[1] or not row[2] or not row[3]:
             continue
         if not str(row[8]).strip():
@@ -214,11 +240,12 @@ def read_items(input_path: Path) -> list[Item]:
 
 
 def read_hardware_items(input_path: Path) -> list[HardwareItem]:
-    book = xlrd.open_workbook(str(input_path), formatting_info=False)
+    book = open_workbook_with_merges(input_path)
     sheet = get_bom_sheet(book, "实木附件", 1)
+    lookup = merged_cell_lookup(sheet)
     items: list[HardwareItem] = []
     for row_idx in range(7, sheet.nrows):
-        row = [sheet.cell_value(row_idx, col) for col in range(sheet.ncols)]
+        row = row_values_with_merges(sheet, row_idx, lookup)
         order_no = str(row[1]).strip()
         area = str(row[2]).strip()
         name = str(row[3]).strip()
@@ -694,12 +721,13 @@ def update_completion_table(wb, total_pages: int) -> None:
 
 
 def read_input_header(input_path: Path) -> dict[str, str]:
-    book = xlrd.open_workbook(str(input_path), formatting_info=False)
+    book = open_workbook_with_merges(input_path)
     sheet = book.sheet_by_name("实木附件")
+    lookup = merged_cell_lookup(sheet)
     header: dict[str, str] = {}
     for row_idx in range(min(4, sheet.nrows)):
         for col_idx in range(sheet.ncols):
-            value = str(sheet.cell_value(row_idx, col_idx)).strip()
+            value = str(cell_value_with_merges(sheet, row_idx, col_idx, lookup)).strip()
             if value.startswith("生产编号："):
                 header["order_no"] = value.split("：", 1)[1].strip()
             elif value.startswith("客户名称："):
