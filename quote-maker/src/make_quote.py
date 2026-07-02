@@ -868,9 +868,9 @@ def fill_hardware_sheets(wb, hardware_items: list[HardwareItem]) -> None:
         return
     ws = wb["\u4e94\u91d1-1"]
     ws.sheet_state = "visible"
-    if wb._sheets.index(ws) != len(wb._sheets) - 1:
-        wb._sheets.remove(ws)
-        wb._sheets.append(ws)
+    wb._sheets.remove(ws)
+    insert_at = wb._sheets.index(wb["汇总"]) if "汇总" in wb.sheetnames else len(wb._sheets)
+    wb._sheets.insert(insert_at, ws)
     ws.sheet_format.zeroHeight = False
     for row in range(1, 31):
         ws.row_dimensions[row].hidden = False
