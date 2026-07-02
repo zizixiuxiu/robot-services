@@ -523,11 +523,13 @@ def quote_area_value(item: Item) -> Any:
     # production needs both meter and square totals.
     if has_value(item.meter) and not is_strip_with_small_dimension(item):
         return None
-    if has_value(item.src_area_value):
-        return item.src_area_value
     height = dimension_total(item.height)
     width = dimension_total(item.width)
     qty = to_number(item.qty)
+    if is_strip_with_small_dimension(item) and height is not None and width is not None and qty is not None:
+        return round(height / 1000 * width / 1000 * qty, 4)
+    if has_value(item.src_area_value):
+        return item.src_area_value
     if height is not None and width is not None and qty is not None:
         return round(height / 1000 * width / 1000 * qty, 4)
     if isinstance(item.width, str):
