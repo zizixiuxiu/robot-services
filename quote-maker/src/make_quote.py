@@ -849,6 +849,32 @@ def hardware_total_formula(row: int, name: str) -> str:
     return f"=Q{row}*I{row}"
 
 
+def unmerge_hardware_remark_blocks(ws: Worksheet) -> None:
+    for merged in list(ws.merged_cells.ranges):
+        if merged.min_row <= 25 and merged.max_row >= 6 and merged.min_col <= 19 <= merged.max_col:
+            ws.unmerge_cells(str(merged))
+
+
+def merge_hardware_remark_blocks(ws: Worksheet, hardware_items: list[HardwareItem]) -> None:
+    if not hardware_items:
+        return
+    unmerge_hardware_remark_blocks(ws)
+
+    start_row = 6
+    current_area = hardware_items[0].area
+    for idx, item in enumerate(hardware_items[:20], start=1):
+        row = 5 + idx
+        if item.area != current_area:
+            end_row = row - 1
+            ws.merge_cells(f"S{start_row}:T{end_row}")
+            ws.cell(start_row, 19).alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+            start_row = row
+            current_area = item.area
+    end_row = 5 + min(len(hardware_items), 20)
+    ws.merge_cells(f"S{start_row}:T{end_row}")
+    ws.cell(start_row, 19).alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+
 def find_sheet_by_name(wb, name: str):
     return wb[name] if name in wb.sheetnames else None
 
@@ -880,6 +906,7 @@ def fill_hardware_sheets(wb, hardware_items: list[HardwareItem]) -> None:
         ws.row_dimensions[row].height = 21
     for col in range(1, 21):
         ws.column_dimensions[get_column_letter(col)].hidden = False
+    unmerge_hardware_remark_blocks(ws)
     restore_hardware_merges(ws)
     # Match the user's reference file: header value cells reference the quote
     # sheet and stay as 4-column merges; use the same column widths.
@@ -917,6 +944,7 @@ def fill_hardware_sheets(wb, hardware_items: list[HardwareItem]) -> None:
         ws.cell(row, 18).value = hardware_total_formula(row, item.name)
         previous_area = hardware_items[idx - 2].area if idx > 1 else None
         ws.cell(row, 19).value = item.area if item.area != previous_area else None
+    merge_hardware_remark_blocks(ws, hardware_items)
     if "\u4e94\u91d1-2" in wb.sheetnames:
         wb["\u4e94\u91d1-2"].sheet_state = "hidden"
 
