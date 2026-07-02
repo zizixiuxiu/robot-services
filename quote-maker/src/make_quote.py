@@ -77,6 +77,8 @@ PAGE_EXTRA_ROWS: dict[int, tuple[str, str, str]] = {
     24: ("木箱包装", "此单共打1个木箱包装", "=150"),
 }
 WOOD_BOX_KEYWORDS = ("玻璃", "木箱包装", "打木箱")
+WOOD_FRAME_NAME = "木架"
+WOOD_FRAME_PRICE = 150
 
 DATA_FORMULA_OVERRIDES: dict[tuple[int, int], dict[int, Any]] = {
     (1, 8): {10: 0.1, 12: "=J8*K8"},
@@ -441,6 +443,21 @@ def wood_box_row() -> tuple[str, str, int]:
     return ("木箱包装", "此单共打1个木箱包装", 150)
 
 
+def set_wood_frame_row(ws: Worksheet, row: int, serial_no: int) -> None:
+    center = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    for col in range(1, 19):
+        cell = ws.cell(row, col)
+        if not isinstance(cell, MergedCell):
+            cell.value = None
+            cell.alignment = copy.copy(center)
+    ws.cell(row, 1).value = serial_no
+    ws.cell(row, 3).value = WOOD_FRAME_NAME
+    ws.cell(row, 8).value = None
+    ws.cell(row, 11).value = WOOD_FRAME_PRICE
+    ws.cell(row, 12).value = f"=K{row}*H{row}"
+    ws.cell(row, 13).value = None
+
+
 def has_value(value: Any) -> bool:
     return value not in (None, "")
 
@@ -476,7 +493,7 @@ def fill_page(
     style_template_ws: Worksheet,
 ) -> int:
     base_merges = [str(rng) for rng in ws.merged_cells.ranges]
-    special_count = (1 if sheet_no == 1 else 0) + (1 if sheet_no in PAGE_EXTRA_ROWS else 0)
+    special_count = (1 if sheet_no == 1 else 0) + (1 if sheet_no in PAGE_EXTRA_ROWS else 0) + 1
     capacity = 7 if sheet_no == 1 else 9
     insert_at = 15 if sheet_no == 1 else 17
     delta = len(items) + special_count - capacity
@@ -516,8 +533,10 @@ def fill_page(
                 ws.cell(row, col).value = value
 
     next_row = 8 + len(items)
+    set_wood_frame_row(ws, next_row, len(items) + 1)
+    next_row += 1
     if sheet_no == 1:
-        ws.cell(next_row, 1).value = len(items) + 1
+        ws.cell(next_row, 1).value = next_row - 7
         ws.cell(next_row, 3).value = "调色费"
         ws.cell(next_row, 8).value = 1
         ws.cell(next_row, 11).value = 300
@@ -526,7 +545,7 @@ def fill_page(
         next_row += 1
     if sheet_no in PAGE_EXTRA_ROWS:
         name, remark, total = PAGE_EXTRA_ROWS[sheet_no]
-        ws.cell(next_row, 1).value = len(items) + 1
+        ws.cell(next_row, 1).value = next_row - 7
         ws.cell(next_row, 3).value = name
         ws.cell(next_row, 4).value = remark
         ws.cell(next_row, 12).value = total
@@ -557,7 +576,7 @@ def fill_page(
         ws.cell(subtotal_row + 2, 4).value = f"='{sheet_no - 1}'!D{subtotal_row if sheet_no == 2 else subtotal_row + 1}"
         ws.cell(subtotal_row + 5, 1).value = f"=+A{subtotal_row}"
 
-    restore_shifted_merges(ws, base_merges, insert_at, delta, 7 + len(items), next_row - 1)
+    restore_shifted_merges(ws, base_merges, insert_at, delta, 7 + len(items) + 1, next_row - 1)
     return subtotal_row
 
 
@@ -626,8 +645,7 @@ def fill_page_input_only(
     style_template_ws: Worksheet,
     header: dict[str, str],
 ) -> None:
-    wood_box_extra = wood_box_row() if needs_wood_box(items) else None
-    special_count = 1 if wood_box_extra else 0
+    special_count = 1
     capacity = 7 if sheet_no == 1 else 9
     insert_at = 15 if sheet_no == 1 else 17
     delta = len(items) + special_count - capacity
@@ -663,14 +681,8 @@ def fill_page_input_only(
         ws.cell(row, 17).value = item.remark
 
     next_row = 8 + len(items)
-    if wood_box_extra:
-        name, remark, total = wood_box_extra
-        ws.cell(next_row, 1).value = len(items) + 1
-        ws.cell(next_row, 3).value = name
-        ws.cell(next_row, 4).value = remark
-        ws.cell(next_row, 12).value = total
-        ws.cell(next_row, 13).value = None
-        next_row += 1
+    set_wood_frame_row(ws, next_row, len(items) + 1)
+    next_row += 1
 
     sum_row = next_row
     ws.cell(sum_row, 1).value = "合计"
@@ -690,20 +702,13 @@ def fill_page_input_only(
                 cell.value = None
 
     clear_auto_formulas(ws)
-    if wood_box_extra:
-        name, remark, total = wood_box_extra
-        wood_box_row_no = sum_row - 1
-        ws.cell(wood_box_row_no, 1).value = len(items) + 1
-        ws.cell(wood_box_row_no, 3).value = name
-        ws.cell(wood_box_row_no, 4).value = remark
-        ws.cell(wood_box_row_no, 12).value = total
-        ws.cell(wood_box_row_no, 13).value = None
+    set_wood_frame_row(ws, sum_row - 1, len(items) + 1)
     ws.cell(sum_row, 1).value = "合计"
     ws.cell(sum_row, 8).value = f"=SUM(H6:H{sum_row - 1})"
     ws.cell(sum_row, 9).value = f"=SUM(I6:I{sum_row - 1})"
     ws.cell(sum_row, 10).value = f"=SUM(J6:J{sum_row - 1})"
     ws.cell(sum_row, 13).value = f"=SUM(M6:M{sum_row - 1})"
-    restore_shifted_merges(ws, base_merges, insert_at, delta, 7 + len(items), 7 + len(items) + special_count)
+    restore_shifted_merges(ws, base_merges, insert_at, delta, 7 + len(items) + special_count, 7 + len(items) + special_count)
     for row in range(8, ws.max_row + 1):
         ws.row_dimensions[row].hidden = False
     hide_bottom_process_area(ws)
