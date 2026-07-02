@@ -76,6 +76,7 @@ PAGE_EXTRA_ROWS: dict[int, tuple[str, str, str]] = {
     22: ("木箱包装", "此单共打2个木箱包装", "=150*2"),
     24: ("木箱包装", "此单共打1个木箱包装", "=150"),
 }
+WOOD_BOX_KEYWORDS = ("玻璃", "木箱包装", "打木箱")
 
 DATA_FORMULA_OVERRIDES: dict[tuple[int, int], dict[int, Any]] = {
     (1, 8): {10: 0.1, 12: "=J8*K8"},
@@ -424,6 +425,22 @@ def line_total_formula(row: int, item: Item) -> str | None:
     return base
 
 
+def needs_wood_box(items: list[Item]) -> bool:
+    for item in items:
+        text = " ".join(
+            str(value)
+            for value in (item.name, item.material, item.color, item.remark)
+            if value not in (None, "")
+        )
+        if any(keyword in text for keyword in WOOD_BOX_KEYWORDS):
+            return True
+    return False
+
+
+def wood_box_row() -> tuple[str, str, int]:
+    return ("木箱包装", "此单共打1个木箱包装", 150)
+
+
 def fill_page(
     ws: Worksheet,
     sheet_no: int,
@@ -583,7 +600,8 @@ def fill_page_input_only(
     style_template_ws: Worksheet,
     header: dict[str, str],
 ) -> None:
-    special_count = 0
+    wood_box_extra = wood_box_row() if needs_wood_box(items) else None
+    special_count = 1 if wood_box_extra else 0
     capacity = 7 if sheet_no == 1 else 9
     insert_at = 15 if sheet_no == 1 else 17
     delta = len(items) + special_count - capacity
@@ -618,7 +636,17 @@ def fill_page_input_only(
         ws.cell(row, 16).value = item.material
         ws.cell(row, 17).value = item.remark
 
-    sum_row = 8 + len(items)
+    next_row = 8 + len(items)
+    if wood_box_extra:
+        name, remark, total = wood_box_extra
+        ws.cell(next_row, 1).value = len(items) + 1
+        ws.cell(next_row, 3).value = name
+        ws.cell(next_row, 4).value = remark
+        ws.cell(next_row, 12).value = total
+        ws.cell(next_row, 13).value = None
+        next_row += 1
+
+    sum_row = next_row
     ws.cell(sum_row, 1).value = "合计"
     ws.cell(sum_row, 8).value = f"=SUM(H6:H{sum_row - 1})"
     ws.cell(sum_row, 9).value = f"=SUM(I6:I{sum_row - 1})"
@@ -636,12 +664,20 @@ def fill_page_input_only(
                 cell.value = None
 
     clear_auto_formulas(ws)
+    if wood_box_extra:
+        name, remark, total = wood_box_extra
+        wood_box_row_no = sum_row - 1
+        ws.cell(wood_box_row_no, 1).value = len(items) + 1
+        ws.cell(wood_box_row_no, 3).value = name
+        ws.cell(wood_box_row_no, 4).value = remark
+        ws.cell(wood_box_row_no, 12).value = total
+        ws.cell(wood_box_row_no, 13).value = None
     ws.cell(sum_row, 1).value = "合计"
     ws.cell(sum_row, 8).value = f"=SUM(H6:H{sum_row - 1})"
     ws.cell(sum_row, 9).value = f"=SUM(I6:I{sum_row - 1})"
     ws.cell(sum_row, 10).value = f"=SUM(J6:J{sum_row - 1})"
     ws.cell(sum_row, 13).value = f"=SUM(M6:M{sum_row - 1})"
-    restore_shifted_merges(ws, base_merges, insert_at, delta, 7 + len(items), 7 + len(items))
+    restore_shifted_merges(ws, base_merges, insert_at, delta, 7 + len(items), 7 + len(items) + special_count)
     for row in range(8, ws.max_row + 1):
         ws.row_dimensions[row].hidden = False
     hide_bottom_process_area(ws)
