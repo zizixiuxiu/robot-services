@@ -862,6 +862,17 @@ def _on_message_receive(data) -> None:
         # 路由判断
         route = CHAT_ROUTES.get(chat_id)
         if not route:
+            # 未配置群 fallback：根据文件名识别经销商数据报表
+            if _detect_dealer_report_type(file_name) != "unknown":
+                port = 8008
+                service_name = "酷家乐月度经销商数据"
+                logger.info("[%s] 未配置群但文件名匹配经销商数据报表，收到文件: %s → 路由到 %s (%d)", chat_id, file_name, service_name, port)
+                threading.Thread(
+                    target=_process_file,
+                    args=(chat_id, message_id, file_key, file_name, port, service_name),
+                    daemon=True,
+                ).start()
+                return
             logger.info("[%s] 未配置的群，忽略", chat_id)
             return
 
