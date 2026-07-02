@@ -441,6 +441,17 @@ def wood_box_row() -> tuple[str, str, int]:
     return ("木箱包装", "此单共打1个木箱包装", 150)
 
 
+def has_value(value: Any) -> bool:
+    return value not in (None, "")
+
+
+def quote_area_value(item: Item) -> Any:
+    # Rows with a meter value are measured by length; keep square blank.
+    if has_value(item.meter):
+        return None
+    return item.src_area_value
+
+
 def fill_page(
     ws: Worksheet,
     sheet_no: int,
@@ -629,7 +640,7 @@ def fill_page_input_only(
         ws.cell(row, 7).value = item.thickness
         ws.cell(row, 8).value = item.qty
         ws.cell(row, 9).value = item.meter
-        ws.cell(row, 10).value = item.src_area_value
+        ws.cell(row, 10).value = quote_area_value(item)
         ws.cell(row, 11).value = None
         ws.cell(row, 12).value = None
         ws.cell(row, 14).value = item.color
