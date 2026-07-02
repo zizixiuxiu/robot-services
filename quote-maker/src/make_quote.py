@@ -499,20 +499,21 @@ def is_strip_with_small_dimension(item: Item) -> bool:
     return "条" in item.name and (has_small_dimension(item.height) or has_small_dimension(item.width))
 
 
-def meter_minimum(value: float) -> float:
-    return round(max(value, 1), 4)
+def meter_total_with_piece_minimum(value_per_piece: float, qty: float) -> float:
+    return round(max(value_per_piece, 1) * qty, 4)
 
 
-def area_minimum(value: float) -> float:
-    return round(max(value, 0.1), 4)
+def area_total_with_piece_minimum(value_per_piece: float, qty: float) -> float:
+    return round(max(value_per_piece, 0.1) * qty, 4)
 
 
 def quote_meter_value(item: Item) -> Any:
     if has_value(item.meter):
         if is_strip_with_small_dimension(item):
             number = to_number(item.meter)
-            if number is not None:
-                return meter_minimum(number)
+            qty = to_number(item.qty)
+            if number is not None and qty:
+                return meter_total_with_piece_minimum(number / qty, qty)
         return item.meter
     if not is_strip_with_small_dimension(item):
         return None
@@ -522,11 +523,11 @@ def quote_meter_value(item: Item) -> Any:
     if qty is None:
         return None
     if height is not None and has_small_dimension(item.width):
-        return meter_minimum(height / 1000 * qty)
+        return meter_total_with_piece_minimum(height / 1000, qty)
     if width is not None and has_small_dimension(item.height):
-        return meter_minimum(width / 1000 * qty)
+        return meter_total_with_piece_minimum(width / 1000, qty)
     if height is not None and width is not None:
-        return meter_minimum(max(height, width) / 1000 * qty)
+        return meter_total_with_piece_minimum(max(height, width) / 1000, qty)
     return None
 
 
@@ -539,7 +540,7 @@ def quote_area_value(item: Item) -> Any:
     width = dimension_total(item.width)
     qty = to_number(item.qty)
     if is_strip_with_small_dimension(item) and height is not None and width is not None and qty is not None:
-        return area_minimum(height / 1000 * width / 1000 * qty)
+        return area_total_with_piece_minimum(height / 1000 * width / 1000, qty)
     if has_value(item.src_area_value):
         return item.src_area_value
     if height is not None and width is not None and qty is not None:
