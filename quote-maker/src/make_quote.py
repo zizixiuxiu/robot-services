@@ -457,17 +457,79 @@ def set_wood_box_packaging_row(ws: Worksheet, row: int, serial_no: int) -> None:
 
 
 def has_value(value: Any) -> bool:
-    return value not in (None, "")
+    return value is not None and str(value).strip() != ""
+
+
+def to_number(value: Any) -> float | None:
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            return float(text)
+        except ValueError:
+            return None
+    return None
+
+
+def dimension_numbers(value: Any) -> list[float]:
+    number = to_number(value)
+    if number is not None:
+        return [number]
+    return [float(match) for match in re.findall(r"\d+(?:\.\d+)?", str(value))]
+
+
+def dimension_total(value: Any) -> float | None:
+    number = to_number(value)
+    if number is not None:
+        return number
+    numbers = dimension_numbers(value)
+    if numbers:
+        return sum(numbers)
+    return None
+
+
+def has_small_dimension(value: Any) -> bool:
+    return any(0 < number < 100 for number in dimension_numbers(value))
+
+
+def is_strip_with_small_dimension(item: Item) -> bool:
+    return "条" in item.name and (has_small_dimension(item.height) or has_small_dimension(item.width))
+
+
+def quote_meter_value(item: Item) -> Any:
+    if has_value(item.meter):
+        return item.meter
+    if not is_strip_with_small_dimension(item):
+        return None
+    height = dimension_total(item.height)
+    width = dimension_total(item.width)
+    qty = to_number(item.qty)
+    if qty is None:
+        return None
+    if height is not None and has_small_dimension(item.width):
+        return round(height / 1000 * qty, 4)
+    if width is not None and has_small_dimension(item.height):
+        return round(width / 1000 * qty, 4)
+    if height is not None and width is not None:
+        return round(max(height, width) / 1000 * qty, 4)
+    return None
 
 
 def quote_area_value(item: Item) -> Any:
-    # Rows with a meter value are measured by length; keep square blank.
-    if has_value(item.meter):
+    # Most meter-based rows keep square blank, except slim strip rows where
+    # production needs both meter and square totals.
+    if has_value(item.meter) and not is_strip_with_small_dimension(item):
         return None
     if has_value(item.src_area_value):
         return item.src_area_value
-    if isinstance(item.height, (int, float)) and isinstance(item.width, (int, float)) and isinstance(item.qty, (int, float)):
-        return round(float(item.height) / 1000 * float(item.width) / 1000 * float(item.qty), 4)
+    height = dimension_total(item.height)
+    width = dimension_total(item.width)
+    qty = to_number(item.qty)
+    if height is not None and width is not None and qty is not None:
+        return round(height / 1000 * width / 1000 * qty, 4)
     if isinstance(item.width, str):
         expr = parse_width_expression(item.width)
         if expr:
@@ -517,7 +579,7 @@ def fill_page(
         ws.cell(row, 6).value = item.width
         ws.cell(row, 7).value = item.thickness
         ws.cell(row, 8).value = item.qty
-        ws.cell(row, 9).value = None
+        ws.cell(row, 9).value = quote_meter_value(item)
         ws.cell(row, 10).value = area_formula(row, item)
         ws.cell(row, 11).value = price_for(item)
         ws.cell(row, 12).value = line_total_formula(row, item)
@@ -670,7 +732,7 @@ def fill_page_input_only(
         ws.cell(row, 6).value = item.width
         ws.cell(row, 7).value = item.thickness
         ws.cell(row, 8).value = item.qty
-        ws.cell(row, 9).value = item.meter
+        ws.cell(row, 9).value = quote_meter_value(item)
         set_quote_area_cell(ws, row, item)
         ws.cell(row, 11).value = None
         ws.cell(row, 12).value = None
