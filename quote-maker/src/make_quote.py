@@ -449,7 +449,22 @@ def quote_area_value(item: Item) -> Any:
     # Rows with a meter value are measured by length; keep square blank.
     if has_value(item.meter):
         return None
-    return item.src_area_value
+    if has_value(item.src_area_value):
+        return item.src_area_value
+    if isinstance(item.height, (int, float)) and isinstance(item.width, (int, float)) and isinstance(item.qty, (int, float)):
+        return round(float(item.height) / 1000 * float(item.width) / 1000 * float(item.qty), 4)
+    if isinstance(item.width, str):
+        expr = parse_width_expression(item.width)
+        if expr:
+            return f"=E{{row}}/1000*({expr})/1000*H{{row}}"
+    return None
+
+
+def set_quote_area_cell(ws: Worksheet, row: int, item: Item) -> None:
+    value = quote_area_value(item)
+    if isinstance(value, str):
+        value = value.format(row=row)
+    ws.cell(row, 10).value = value
 
 
 def fill_page(
@@ -640,7 +655,7 @@ def fill_page_input_only(
         ws.cell(row, 7).value = item.thickness
         ws.cell(row, 8).value = item.qty
         ws.cell(row, 9).value = item.meter
-        ws.cell(row, 10).value = quote_area_value(item)
+        set_quote_area_cell(ws, row, item)
         ws.cell(row, 11).value = None
         ws.cell(row, 12).value = None
         ws.cell(row, 14).value = item.color
@@ -853,9 +868,9 @@ def fill_hardware_sheets(wb, hardware_items: list[HardwareItem]) -> None:
         return
     ws = wb["\u4e94\u91d1-1"]
     ws.sheet_state = "visible"
-    if wb._sheets.index(ws) != 1:
+    if wb._sheets.index(ws) != len(wb._sheets) - 1:
         wb._sheets.remove(ws)
-        wb._sheets.insert(1, ws)
+        wb._sheets.append(ws)
     ws.sheet_format.zeroHeight = False
     for row in range(1, 31):
         ws.row_dimensions[row].hidden = False
