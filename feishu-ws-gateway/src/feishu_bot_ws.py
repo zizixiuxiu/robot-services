@@ -90,6 +90,8 @@ CHAT_ROUTES = {
     "oc_43068f21ebba49ac209fbf78e9f86217": {"port": 8004, "name": "CSV板件转换"},
     "oc_51479339eef6b26fe9dcdcb8a5fb0c50": {"port": 8005, "name": "PVC分类"},
     "oc_c0986e7cea619374cfce226cbb199cc4": {"port": 8006, "name": "下车间单转换"},
+    # 酷家乐月度经销商数据群：固定绑定 8008，不需要根据文件名路由
+    "oc_ccb759f87c198521c575984b3f316cb8": {"port": 8008, "name": "酷家乐月度经销商数据"},
 }
 
 for _chat_id in [x.strip() for x in os.getenv("FEISHU_QUOTE_CHAT_ID", "").split(",") if x.strip()]:
