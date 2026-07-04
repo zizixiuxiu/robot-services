@@ -104,6 +104,11 @@ for _chat_id in [x.strip() for x in os.getenv("FEISHU_DEALER_REPORT_CHAT_ID", ""
 _pending_files = {}
 _pending_files_locks = {}  # chat_id -> threading.Lock
 
+# 5月业绩核对（8003）批量收集窗口
+_DEALER_SALES_WINDOW = 5  # 秒
+_dealer_sales_queues = {}   # chat_id -> [file_info, ...]
+_dealer_sales_timers = {}   # chat_id -> Timer
+
 # 经销商数据报表（8008）批量收集窗口
 _DEALER_REPORT_WINDOW = 5  # 秒
 _dealer_report_queues = {}   # chat_id -> [file_info, ...]
@@ -515,6 +520,19 @@ def _send_quantity_card(chat_id: str, result: dict, port: int, service_name: str
         return False
 
 
+def _collect_result_warnings(result: dict) -> list[str]:
+    warnings = []
+    for key in ("warning", "warnings"):
+        value = result.get(key)
+        if isinstance(value, list):
+            warnings.extend(str(item) for item in value if item)
+        elif value:
+            warnings.append(str(value))
+    for res in result.get("results", []):
+        warnings.extend(_collect_result_warnings(res))
+    return warnings
+
+
 def _process_batch(chat_id: str, port: int, service_name: str):
     """处理批量队列"""
     global _batch_queues, _batch_timers
@@ -548,11 +566,7 @@ def _process_batch(chat_id: str, port: int, service_name: str):
 
         count = total_count
         msg = f"✅ {service_name}批量处理完成，共处理 {len(queue)} 个文件，生成 {count} 个结果文件，请检查。"
-        warnings = []
-        for res in result.get("results", []):
-            w = res.get("warning")
-            if w:
-                warnings.append(w)
+        warnings = _collect_result_warnings(result)
         if warnings:
             msg += "\n\n" + "\n".join(warnings)
         _send_text(chat_id, msg)
@@ -597,88 +611,95 @@ def _detect_may_sales_type(file_name: str) -> str:
     return "unknown"
 
 
-def _handle_dealer_file(chat_id: str, message_id: str, file_key: str, file_name: str, local_path: str, service_name: str):
-    """处理 5月业绩核对群文件：收集 3 个文件后调用 8003"""
-    global _pending_files, _pending_files_locks
+def _process_dealer_sales_batch(chat_id: str, service_name: str):
+    """批量处理 5月业绩核对队列中的三个文件"""
+    global _dealer_sales_queues, _dealer_sales_timers
+    queue = _dealer_sales_queues.pop(chat_id, [])
+    _dealer_sales_timers.pop(chat_id, None)
 
-    ftype = _detect_may_sales_type(file_name)
-    if ftype == "unknown":
-        _send_text(chat_id, f"⚠️ 无法识别文件「{file_name}」，文件名需包含：综合查询、联思、奢匠/下单统计")
+    zhcx = [f for f in queue if _detect_may_sales_type(f["file_name"]) == "zhcx"]
+    liansi = [f for f in queue if _detect_may_sales_type(f["file_name"]) == "liansi"]
+    shejiang = [f for f in queue if _detect_may_sales_type(f["file_name"]) == "shejiang"]
+
+    logger.info("[%s] 5月业绩核对批量处理启动，队列 %d 个，综合查询 %d 个，联思 %d 个，奢匠 %d 个",
+                chat_id, len(queue), len(zhcx), len(liansi), len(shejiang))
+
+    if not zhcx or not liansi or not shejiang:
+        _send_text(chat_id, f"\u26a0\ufe0f 需要同时上传综合查询、联思系统、奢匠/下单统计三类文件。当前：综合查询 {len(zhcx)} 个，联思 {len(liansi)} 个，奢匠 {len(shejiang)} 个")
+        for f in queue:
+            try:
+                Path(f["file_path"]).unlink(missing_ok=True)
+            except Exception:
+                pass
         return
 
-    # 每个 chat_id 一个锁，避免三个文件同时上传时状态竞争
-    if chat_id not in _pending_files_locks:
-        _pending_files_locks[chat_id] = threading.Lock()
-    lock = _pending_files_locks[chat_id]
+    files = [zhcx[0], liansi[0], shejiang[0]]
+    for f in queue:
+        if f not in files:
+            try:
+                Path(f["file_path"]).unlink(missing_ok=True)
+            except Exception:
+                pass
 
-    with lock:
-        # 保存文件到持久化目录
-        save_dir = Path(tempfile.gettempdir()) / f"dealer_pending_{chat_id}"
-        save_dir.mkdir(exist_ok=True)
-        save_path = save_dir / file_name
-        shutil.copy(local_path, save_path)
-
-        if chat_id not in _pending_files:
-            _pending_files[chat_id] = {}
-
-        _pending_files[chat_id][ftype] = {
-            "file_path": str(save_path),
-            "file_name": file_name,
-            "message_id": message_id,
-            "file_key": file_key,
-            "time": time.time(),
-        }
-
-        # 检查是否凑齐 3 个文件
-        required = {"zhcx", "liansi", "shejiang"}
-        collected = set(_pending_files[chat_id].keys())
-        missing = required - collected
-
-        if missing:
-            missing_names = []
-            if "zhcx" in missing:
-                missing_names.append("综合查询")
-            if "liansi" in missing:
-                missing_names.append("联思系统")
-            if "shejiang" in missing:
-                missing_names.append("奢匠下单统计")
-            _send_text(chat_id, f"✅ 已收到【{file_name}】，还缺少：{'、'.join(missing_names)}，请继续上传。")
-            return
-
-        # 凑齐了，提取文件并删除待处理记录
-        files = []
-        for key in required:
-            files.append(_pending_files[chat_id][key])
-        del _pending_files[chat_id]
-
-    # 释放锁后再调用 8003，避免长时间占用锁
     logger.info("[%s] 5月业绩核对文件凑齐，开始处理: %s", chat_id, [f["file_name"] for f in files])
     try:
         result = _call_batch_service(8003, files)
         logger.info("[%s] 处理结果: %s", chat_id, result.get("success"))
 
         if not result.get("success"):
-            _send_text(chat_id, f"❌ 处理失败：{result.get('error', '未知错误')}")
+            _send_text(chat_id, f"\u274c 处理失败：{result.get('error', '未知错误')}")
             return
 
         output_files = result.get("output_files", [])
         if not output_files:
-            _send_text(chat_id, "⚠️ 处理完成但未生成文件")
+            _send_text(chat_id, "\u26a0\ufe0f 处理完成但未生成文件")
             return
 
-        # 支持成对返回：dict {原始文件名: [file1, file2, ...]} 或旧格式列表
         output_pairs = _normalize_output_pairs(output_files)
         sent_count = _send_output_pairs(chat_id, output_pairs, "从返回内容上传", "检查输出文件", False, False)
 
-        _send_text(chat_id, f"✅ {service_name}处理完成，共 {sent_count} 个文件，请检查。")
+        _send_text(chat_id, f"\u2705 {service_name}处理完成，共 {sent_count} 个文件，请检查。")
     except Exception as e:
         logger.exception("[%s] 处理异常", chat_id)
-        _send_text(chat_id, f"❌ 处理异常：{str(e)}")
-    finally:
-        # 清理持久化文件
-        # 清理持久化文件
-        shutil.rmtree(save_dir, ignore_errors=True)
+        _send_text(chat_id, f"\u274c 处理异常：{str(e)}")
 
+
+def _handle_dealer_file(chat_id: str, message_id: str, file_key: str, file_name: str, local_path: str, service_name: str):
+    """处理 5月业绩核对群文件：5秒窗口内收集三类文件后批量调用 8003"""
+    global _dealer_sales_queues, _dealer_sales_timers
+
+    ftype = _detect_may_sales_type(file_name)
+    if ftype == "unknown":
+        _send_text(chat_id, f"\u26a0\ufe0f 无法识别文件「{file_name}」，文件名需包含：综合查询、联思、奢匠/下单统计")
+        return
+
+    save_dir = Path(tempfile.gettempdir()) / f"dealer_sales_pending_{chat_id}"
+    save_dir.mkdir(exist_ok=True)
+    save_path = save_dir / file_name
+    shutil.copy(local_path, save_path)
+
+    if chat_id not in _dealer_sales_queues:
+        _dealer_sales_queues[chat_id] = []
+
+    _dealer_sales_queues[chat_id].append({
+        "file_path": str(save_path),
+        "file_name": file_name,
+        "message_id": message_id,
+        "file_key": file_key,
+        "time": time.time(),
+    })
+
+    if chat_id in _dealer_sales_timers and _dealer_sales_timers[chat_id] is not None:
+        _dealer_sales_timers[chat_id].cancel()
+
+    timer = threading.Timer(_DEALER_SALES_WINDOW, _process_dealer_sales_batch, args=(chat_id, service_name))
+    timer.daemon = True
+    timer.start()
+    _dealer_sales_timers[chat_id] = timer
+
+    queue_len = len(_dealer_sales_queues[chat_id])
+    logger.info("[%s] 5月业绩核对文件加入队列: %s，当前 %d 个文件", chat_id, file_name, queue_len)
+    _send_text(chat_id, f"\u2705 已收到第 {queue_len} 个文件「{file_name}」，{_DEALER_SALES_WINDOW}秒内继续上传的文件将一起批量处理。")
 
 def _process_dealer_report_queue(chat_id: str, service_name: str):
     """批量处理经销商数据报表队列中的文件对"""
@@ -860,9 +881,9 @@ def _process_file(chat_id: str, message_id: str, file_key: str, file_name: str, 
 
         count = sent_count
         msg = f"✅ {service_name}处理完成，共 {count} 个文件，请检查。"
-        warning = result.get("warning")
-        if warning:
-            msg += f"\n\n{warning}"
+        warnings = _collect_result_warnings(result)
+        if warnings:
+            msg += "\n\n" + "\n".join(warnings)
         _send_text(chat_id, msg)
         _send_quantity_card(chat_id, result, port, service_name)
 
