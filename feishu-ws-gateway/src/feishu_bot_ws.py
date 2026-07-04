@@ -105,9 +105,11 @@ _pending_files = {}
 _pending_files_locks = {}  # chat_id -> threading.Lock
 
 # 5月业绩核对（8003）批量收集窗口
-_DEALER_SALES_WINDOW = 20  # 秒
-_dealer_sales_queues = {}   # chat_id -> [file_info, ...]
-_dealer_sales_timers = {}   # chat_id -> Timer
+_DEALER_SALES_WINDOW = 20       # 每次上传后等待更多文件的窗口
+_DEALER_SALES_FINAL_WINDOW = 60 # 最终等待窗口，支持分批一个个上传
+_dealer_sales_queues = {}        # chat_id -> [file_info, ...]
+_dealer_sales_timers = {}        # chat_id -> Timer (普通窗口)
+_dealer_sales_final_timers = {}  # chat_id -> Timer (最终等待窗口)
 
 # 经销商数据报表（8008）批量收集窗口
 _DEALER_REPORT_WINDOW = 5  # 秒
@@ -611,28 +613,62 @@ def _detect_may_sales_type(file_name: str) -> str:
     return "unknown"
 
 
-def _process_dealer_sales_batch(chat_id: str, service_name: str):
-    """批量处理 5月业绩核对队列中的三个文件"""
-    global _dealer_sales_queues, _dealer_sales_timers
-    queue = _dealer_sales_queues.pop(chat_id, [])
-    _dealer_sales_timers.pop(chat_id, None)
+def _process_dealer_sales_batch(chat_id: str, service_name: str, is_final: bool = False):
+    """批量处理 5月业绩核对队列中的三个文件
+    is_final=False: 普通 20 秒窗口触发，如果没齐进入最终 60 秒等待
+    is_final=True: 最终 60 秒窗口触发，如果没齐则清空并提示超时
+    """
+    global _dealer_sales_queues, _dealer_sales_timers, _dealer_sales_final_timers
+
+    # 只有最终定时器触发时才清理 final timer 引用
+    if is_final:
+        _dealer_sales_final_timers.pop(chat_id, None)
+    else:
+        _dealer_sales_timers.pop(chat_id, None)
+
+    queue = _dealer_sales_queues.get(chat_id, [])
+    if not queue:
+        return
 
     zhcx = [f for f in queue if _detect_may_sales_type(f["file_name"]) == "zhcx"]
     liansi = [f for f in queue if _detect_may_sales_type(f["file_name"]) == "liansi"]
     shejiang = [f for f in queue if _detect_may_sales_type(f["file_name"]) == "shejiang"]
 
-    logger.info("[%s] 5月业绩核对批量处理启动，队列 %d 个，综合查询 %d 个，联思 %d 个，奢匠 %d 个",
-                chat_id, len(queue), len(zhcx), len(liansi), len(shejiang))
+    logger.info("[%s] 5月业绩核对批量处理触发(is_final=%s)，队列 %d 个，综合查询 %d 个，联思 %d 个，奢匠 %d 个",
+                chat_id, is_final, len(queue), len(zhcx), len(liansi), len(shejiang))
 
     if not zhcx or not liansi or not shejiang:
-        _send_text(chat_id, f"\u26a0\ufe0f 需要同时上传综合查询、联思系统、奢匠/下单统计三类文件。当前：综合查询 {len(zhcx)} 个，联思 {len(liansi)} 个，奢匠 {len(shejiang)} 个")
-        for f in queue:
-            try:
-                Path(f["file_path"]).unlink(missing_ok=True)
-            except Exception:
-                pass
+        if is_final:
+            # 最终等待超时，清空队列
+            _send_text(chat_id, f"\u274c {service_name}等待超时：未凑齐三类文件（综合查询 {len(zhcx)} 个，联思 {len(liansi)} 个，奢匠 {len(shejiang)} 个），请重新上传。")
+            for f in queue:
+                try:
+                    Path(f["file_path"]).unlink(missing_ok=True)
+                except Exception:
+                    pass
+            _dealer_sales_queues.pop(chat_id, None)
+        else:
+            # 普通窗口没齐，提示还缺什么，并启动最终等待窗口
+            missing_names = []
+            if not zhcx:
+                missing_names.append("综合查询")
+            if not liansi:
+                missing_names.append("联思系统")
+            if not shejiang:
+                missing_names.append("奢匠/下单统计")
+            _send_text(chat_id, f"\u26a0\ufe0f 已收到部分文件，还缺少：{'、'.join(missing_names)}。请在 {_DEALER_SALES_FINAL_WINDOW} 秒内继续上传，已收到的文件会保留。")
+
+            # 取消已有的最终定时器
+            if chat_id in _dealer_sales_final_timers and _dealer_sales_final_timers[chat_id] is not None:
+                _dealer_sales_final_timers[chat_id].cancel()
+
+            timer = threading.Timer(_DEALER_SALES_FINAL_WINDOW, _process_dealer_sales_batch, args=(chat_id, service_name, True))
+            timer.daemon = True
+            timer.start()
+            _dealer_sales_final_timers[chat_id] = timer
         return
 
+    # 凑齐了，处理
     files = [zhcx[0], liansi[0], shejiang[0]]
     for f in queue:
         if f not in files:
@@ -640,6 +676,7 @@ def _process_dealer_sales_batch(chat_id: str, service_name: str):
                 Path(f["file_path"]).unlink(missing_ok=True)
             except Exception:
                 pass
+    _dealer_sales_queues.pop(chat_id, None)
 
     logger.info("[%s] 5月业绩核对文件凑齐，开始处理: %s", chat_id, [f["file_name"] for f in files])
     try:
@@ -663,10 +700,9 @@ def _process_dealer_sales_batch(chat_id: str, service_name: str):
         logger.exception("[%s] 处理异常", chat_id)
         _send_text(chat_id, f"\u274c 处理异常：{str(e)}")
 
-
 def _handle_dealer_file(chat_id: str, message_id: str, file_key: str, file_name: str, local_path: str, service_name: str):
-    """处理 5月业绩核对群文件：5秒窗口内收集三类文件后批量调用 8003"""
-    global _dealer_sales_queues, _dealer_sales_timers
+    """处理 5月业绩核对群文件：支持批量上传或分批一个个上传"""
+    global _dealer_sales_queues, _dealer_sales_timers, _dealer_sales_final_timers
 
     ftype = _detect_may_sales_type(file_name)
     if ftype == "unknown":
@@ -689,17 +725,21 @@ def _handle_dealer_file(chat_id: str, message_id: str, file_key: str, file_name:
         "time": time.time(),
     })
 
+    # 取消已有的普通窗口和最终等待定时器
     if chat_id in _dealer_sales_timers and _dealer_sales_timers[chat_id] is not None:
         _dealer_sales_timers[chat_id].cancel()
+    if chat_id in _dealer_sales_final_timers and _dealer_sales_final_timers[chat_id] is not None:
+        _dealer_sales_final_timers[chat_id].cancel()
 
-    timer = threading.Timer(_DEALER_SALES_WINDOW, _process_dealer_sales_batch, args=(chat_id, service_name))
+    # 启动新的 20 秒普通窗口
+    timer = threading.Timer(_DEALER_SALES_WINDOW, _process_dealer_sales_batch, args=(chat_id, service_name, False))
     timer.daemon = True
     timer.start()
     _dealer_sales_timers[chat_id] = timer
 
     queue_len = len(_dealer_sales_queues[chat_id])
     logger.info("[%s] 5月业绩核对文件加入队列: %s，当前 %d 个文件", chat_id, file_name, queue_len)
-    _send_text(chat_id, f"\u2705 已收到第 {queue_len} 个文件「{file_name}」，{_DEALER_SALES_WINDOW}秒内继续上传的文件将一起批量处理。")
+    _send_text(chat_id, f"\u2705 已收到第 {queue_len} 个文件「{file_name}」，{_DEALER_SALES_WINDOW}秒内上传更多文件会一起批量处理；也可以一个个慢慢传，已收到的文件会保留。")
 
 def _process_dealer_report_queue(chat_id: str, service_name: str):
     """批量处理经销商数据报表队列中的文件对"""
