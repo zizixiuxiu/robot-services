@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 独立飞书 Bot 网关 — WebSocket 模式（基于 lark_oapi.ws.Client）
 
@@ -17,6 +17,7 @@
 """
 import os
 import sys
+import re
 import json
 import time
 import base64
@@ -86,7 +87,7 @@ CHAT_ROUTES = {
     "oc_f74b3f332d275f70ba22b4332b5b442d": {"port": 8002, "name": "报价料单"},
     "oc_52ccbd9aa43c7abcfe9a8039c638e934": {"port": 8001, "name": "五金汇总"},
     "oc_09e8345ee873ce43f52ca182770b56a5": {"port": "auto", "name": "测试群"},
-    "oc_29ac7f425833255ff93fcf53f4575a70": {"port": 8003, "name": "5月业绩核对"},
+    "oc_29ac7f425833255ff93fcf53f4575a70": {"port": 8003, "name": "销售部业绩核对"},
     "oc_43068f21ebba49ac209fbf78e9f86217": {"port": 8004, "name": "CSV板件转换"},
     "oc_51479339eef6b26fe9dcdcb8a5fb0c50": {"port": 8005, "name": "PVC分类"},
     "oc_c0986e7cea619374cfce226cbb199cc4": {"port": 8006, "name": "下车间单转换"},
@@ -104,7 +105,7 @@ for _chat_id in [x.strip() for x in os.getenv("FEISHU_DEALER_REPORT_CHAT_ID", ""
 _pending_files = {}
 _pending_files_locks = {}  # chat_id -> threading.Lock
 
-# 5月业绩核对（8003）批量收集窗口
+# 销售部业绩核对（8003）批量收集窗口
 _DEALER_SALES_WINDOW = 20       # 每次上传后等待更多文件的窗口
 _DEALER_SALES_FINAL_WINDOW = 60 # 最终等待窗口，支持分批一个个上传
 _dealer_sales_queues = {}        # chat_id -> [file_info, ...]
@@ -602,7 +603,7 @@ def _start_batch_timer(chat_id: str, port: int, service_name: str):
 
 
 def _detect_may_sales_type(file_name: str) -> str:
-    """识别 5月业绩核对文件类型"""
+    """识别 销售部业绩核对文件类型"""
     name = file_name.lower()
     if "综合查询" in name:
         return "zhcx"
@@ -613,8 +614,18 @@ def _detect_may_sales_type(file_name: str) -> str:
     return "unknown"
 
 
+def _extract_month_from_dealer_sales_files(files):
+    """从文件名中提取月份数字"""
+    for f in files:
+        fn = f.get("file_name", "")
+        m = re.search(r"(\d+)\s*月", fn)
+        if m:
+            return str(int(m.group(1)))
+    return None
+
+
 def _process_dealer_sales_batch(chat_id: str, service_name: str, is_final: bool = False):
-    """批量处理 5月业绩核对队列中的三个文件
+    """批量处理 销售部业绩核对队列中的三个文件
     is_final=False: 普通 20 秒窗口触发，如果没齐进入最终 60 秒等待
     is_final=True: 最终 60 秒窗口触发，如果没齐则清空并提示超时
     """
@@ -634,7 +645,7 @@ def _process_dealer_sales_batch(chat_id: str, service_name: str, is_final: bool 
     liansi = [f for f in queue if _detect_may_sales_type(f["file_name"]) == "liansi"]
     shejiang = [f for f in queue if _detect_may_sales_type(f["file_name"]) == "shejiang"]
 
-    logger.info("[%s] 5月业绩核对批量处理触发(is_final=%s)，队列 %d 个，综合查询 %d 个，联思 %d 个，奢匠 %d 个",
+    logger.info("[%s] 销售部业绩核对批量处理触发(is_final=%s)，队列 %d 个，综合查询 %d 个，联思 %d 个，奢匠 %d 个",
                 chat_id, is_final, len(queue), len(zhcx), len(liansi), len(shejiang))
 
     if not zhcx or not liansi or not shejiang:
@@ -678,7 +689,7 @@ def _process_dealer_sales_batch(chat_id: str, service_name: str, is_final: bool 
                 pass
     _dealer_sales_queues.pop(chat_id, None)
 
-    logger.info("[%s] 5月业绩核对文件凑齐，开始处理: %s", chat_id, [f["file_name"] for f in files])
+    logger.info("[%s] 销售部业绩核对文件凑齐，开始处理: %s", chat_id, [f["file_name"] for f in files])
     try:
         result = _call_batch_service(8003, files)
         logger.info("[%s] 处理结果: %s", chat_id, result.get("success"))
@@ -695,13 +706,15 @@ def _process_dealer_sales_batch(chat_id: str, service_name: str, is_final: bool 
         output_pairs = _normalize_output_pairs(output_files)
         sent_count = _send_output_pairs(chat_id, output_pairs, "从返回内容上传", "检查输出文件", False, False)
 
-        _send_text(chat_id, f"\u2705 {service_name}处理完成，共 {sent_count} 个文件，请检查。")
+        month = _extract_month_from_dealer_sales_files(files)
+        month_text = f"{month}月" if month else ""
+        _send_text(chat_id, f"\u2705 {service_name}{month_text}处理完成，共 {sent_count} 个文件，请检查。")
     except Exception as e:
         logger.exception("[%s] 处理异常", chat_id)
         _send_text(chat_id, f"\u274c 处理异常：{str(e)}")
 
 def _handle_dealer_file(chat_id: str, message_id: str, file_key: str, file_name: str, local_path: str, service_name: str):
-    """处理 5月业绩核对群文件：支持批量上传或分批一个个上传"""
+    """处理 销售部业绩核对群文件：支持批量上传或分批一个个上传"""
     global _dealer_sales_queues, _dealer_sales_timers, _dealer_sales_final_timers
 
     ftype = _detect_may_sales_type(file_name)
@@ -739,7 +752,7 @@ def _handle_dealer_file(chat_id: str, message_id: str, file_key: str, file_name:
     has_shejiang = any(_detect_may_sales_type(f["file_name"]) == "shejiang" for f in queue)
 
     if has_zhcx and has_liansi and has_shejiang:
-        logger.info("[%s] 5月业绩核对三类文件已凑齐，立即处理", chat_id)
+        logger.info("[%s] 销售部业绩核对三类文件已凑齐，立即处理", chat_id)
         _send_text(chat_id, f"✅ 已收到三类文件，立即处理...")
         timer = threading.Timer(0.5, _process_dealer_sales_batch, args=(chat_id, service_name, False))
         timer.daemon = True
@@ -754,7 +767,7 @@ def _handle_dealer_file(chat_id: str, message_id: str, file_key: str, file_name:
     _dealer_sales_timers[chat_id] = timer
 
     queue_len = len(_dealer_sales_queues[chat_id])
-    logger.info("[%s] 5月业绩核对文件加入队列: %s，当前 %d 个文件", chat_id, file_name, queue_len)
+    logger.info("[%s] 销售部业绩核对文件加入队列: %s，当前 %d 个文件", chat_id, file_name, queue_len)
     _send_text(chat_id, f"\u2705 已收到第 {queue_len} 个文件「{file_name}」，{_DEALER_SALES_WINDOW}秒内上传更多文件会一起批量处理；也可以一个个慢慢传，已收到的文件会保留。")
 
 def _process_dealer_report_queue(chat_id: str, service_name: str):
