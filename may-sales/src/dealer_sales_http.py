@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-5月销售部业绩核对表 HTTP 服务
+销售部业绩核对表 HTTP 服务
 端口：8003（替换原经销商销售服务）
 调用 generate_may_sales_report.js 处理 Excel 文件
 支持 Windows 本机运行和 Docker 容器运行
@@ -149,7 +149,15 @@ class Handler(BaseHTTPRequestHandler):
     def _process_files(self, req: dict) -> dict:
         files = req.get('files', [])
         order_date = req.get('order_date')
-        logger.info("收到 5月业绩核对请求，文件数=%d, order_date=%s", len(files), order_date)
+        month = _detect_month_from_filenames([f.get('filename', '') for f in files])
+        if not month and order_date:
+            try:
+                month = str(int(order_date.split('.')[1]))
+            except Exception:
+                month = '5'
+        if not month:
+            month = '5'
+        logger.info("收到 %s月业绩核对请求，文件数=%d, order_date=%s", month, len(files), order_date)
         if not files or len(files) < 3:
             return {"success": False, "error": "需要至少 3 个文件：综合查询、联思系统、奢匠下单统计"}
 
@@ -197,15 +205,6 @@ class Handler(BaseHTTPRequestHandler):
         if not OUTPUT_DIR.exists():
             OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-        # 根据文件名中的月份生成输出文件名，默认使用 order_date 的月份
-        month = _detect_month_from_filenames([f.get('filename', '') for f in files])
-        if not month and order_date:
-            try:
-                month = str(int(order_date.split('.')[1]))
-            except Exception:
-                month = '5'
-        if not month:
-            month = '5'
         output_filename = f'2026年{month}月销售部业绩核对表.xlsx'
         output_path = str(OUTPUT_DIR / output_filename)
 
@@ -237,7 +236,7 @@ class Handler(BaseHTTPRequestHandler):
                 result['content_warning'] = f"读取输出文件内容失败: {e}"
 
         shutil.rmtree(tmpdir, ignore_errors=True)
-        logger.info("5月业绩核对处理完成，success=%s", result.get('success'))
+        logger.info("%s月业绩核对处理完成，success=%s", month, result.get('success'))
         return result
 
     def do_POST(self):

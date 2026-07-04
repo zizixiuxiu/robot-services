@@ -174,8 +174,9 @@ function processShejiang(rows) {
   return results;
 }
 
-function processLiansi(rows) {
+function processLiansi(rows, liansiMonth) {
   const results = [];
+  const monthLabel = liansiMonth ? `${liansiMonth}月` : '5月';
   for (let i = 1; i < rows.length; i++) {
     const row = rows[i];
     const dealer = cleanDealer(row[2]);
@@ -197,7 +198,7 @@ function processLiansi(rows) {
     };
     if (!otMap[ot]) continue;
     results.push({
-      month: '5月',
+      month: monthLabel,
       dealer,
       province,
       city,
@@ -298,7 +299,7 @@ async function main() {
 
   const records = [];
   records.push(...processShejiang(shejiangRows));
-  records.push(...processLiansi(liansiRows));
+  records.push(...processLiansi(liansiRows, getReportMonth()));
   records.push(...processZhcx(zhcxRows, existingProdNos));
 
   console.log(`共提取 ${records.length} 条记录`);
