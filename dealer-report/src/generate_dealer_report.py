@@ -25,7 +25,7 @@ DEFAULT_REGION_ORDER = ['东北区', '华北区', '华东区', '华南区', '华
 COLOR_TITLE_BG = '1F4E78'      # 深蓝
 COLOR_HEADER_BG = '4472C4'     # 蓝色
 COLOR_REGION_TOTAL_BG = 'D9E1F2'  # 浅蓝
-COLOR_GRAND_TOTAL_BG = 'FFC000'   # 橙色
+COLOR_GRAND_TOTAL_BG = '1F4E78'   # 深蓝（总合计，与标题呼应）
 COLOR_ZEBRA = 'F2F2F2'         # 浅灰
 COLOR_WHITE = 'FFFFFF'
 COLOR_BORDER = 'BFBFBF'
@@ -35,6 +35,7 @@ FONT_TITLE = Font(name='黑体', size=18, bold=True, color='FFFFFF')
 FONT_HEADER = Font(name='黑体', size=11, bold=True, color='FFFFFF')
 FONT_DATA = Font(name='微软雅黑', size=10)
 FONT_TOTAL = Font(name='微软雅黑', size=11, bold=True)
+FONT_TOTAL_WHITE = Font(name='微软雅黑', size=11, bold=True, color='FFFFFF')
 
 # 边框样式
 THIN_BORDER = Border(
@@ -283,7 +284,7 @@ def write_formatted_excel_new(df, output_path, title='经销商数据'):
     ws.title = '账号信息明细'
 
     _set_column_widths(ws, {
-        'A': 12, 'B': 30, 'C': 14, 'D': 16,
+        'A': 24, 'B': 30, 'C': 14, 'D': 16,
         'E': 16, 'F': 16, 'G': 12, 'H': 12
     })
 
@@ -361,25 +362,25 @@ def write_formatted_excel_new(df, output_path, title='经销商数据'):
             if row['新增渲染方案数'] > 0:
                 cell_g = ws.cell(row=current_excel_row, column=7,
                                  value=f'=F{current_excel_row}/D{current_excel_row}')
+                cell_g.number_format = '0.00%'
             else:
-                cell_g = ws.cell(row=current_excel_row, column=7, value=0)
+                cell_g = ws.cell(row=current_excel_row, column=7, value='')
             cell_g.fill = row_fill
             cell_g.font = FONT_DATA
             cell_g.alignment = CENTER_ALIGN
             cell_g.border = THIN_BORDER
-            cell_g.number_format = '0.00%'
 
             # 提审/创建
             if row['创建方案数'] > 0:
                 cell_h = ws.cell(row=current_excel_row, column=8,
                                  value=f'=F{current_excel_row}/C{current_excel_row}')
+                cell_h.number_format = '0.00%'
             else:
-                cell_h = ws.cell(row=current_excel_row, column=8, value=0)
+                cell_h = ws.cell(row=current_excel_row, column=8, value='')
             cell_h.fill = row_fill
             cell_h.font = FONT_DATA
             cell_h.alignment = CENTER_ALIGN
             cell_h.border = THIN_BORDER
-            cell_h.number_format = '0.00%'
 
             ws.row_dimensions[current_excel_row].height = 22.0
             current_excel_row += 1
@@ -429,7 +430,7 @@ def write_formatted_excel_new(df, output_path, title='经销商数据'):
 
     for col in range(1, 9):
         ws.cell(row=grand_total_row, column=col).fill = total_fill
-        ws.cell(row=grand_total_row, column=col).font = FONT_TOTAL
+        ws.cell(row=grand_total_row, column=col).font = FONT_TOTAL_WHITE
         ws.cell(row=grand_total_row, column=col).alignment = CENTER_ALIGN
         ws.cell(row=grand_total_row, column=col).border = THIN_BORDER
 
