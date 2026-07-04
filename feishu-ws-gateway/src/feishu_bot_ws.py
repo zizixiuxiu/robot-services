@@ -105,7 +105,7 @@ _pending_files = {}
 _pending_files_locks = {}  # chat_id -> threading.Lock
 
 # 5月业绩核对（8003）批量收集窗口
-_DEALER_SALES_WINDOW = 5  # 秒
+_DEALER_SALES_WINDOW = 20  # 秒
 _dealer_sales_queues = {}   # chat_id -> [file_info, ...]
 _dealer_sales_timers = {}   # chat_id -> Timer
 
