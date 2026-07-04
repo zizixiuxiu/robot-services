@@ -28,7 +28,7 @@ from generate_dealer_report import (  # noqa: E402
     build_output_df,
     process_account_data,
     process_designer_data,
-    write_formatted_excel,
+    write_formatted_excel_new,
 )
 
 
@@ -81,7 +81,7 @@ def run_dealer_report(account_path: Path, designer_path: Path, output_path: Path
     account_agg = process_account_data(account_path)
     designer_agg = process_designer_data(designer_path)
     out_df = build_output_df(account_agg, designer_agg)
-    write_formatted_excel(out_df, output_path, title=title)
+    write_formatted_excel_new(out_df, output_path, title=title)
     return {
         "rows": int(len(out_df)),
         "account_rows": int(len(account_agg)),
