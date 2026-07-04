@@ -357,6 +357,30 @@ def write_formatted_excel_new(df, output_path, title='经销商数据'):
             cell_e.border = THIN_BORDER
             cell_e.number_format = '0%'
 
+            # 提审/渲染
+            if row['新增渲染方案数'] > 0:
+                cell_g = ws.cell(row=current_excel_row, column=7,
+                                 value=f'=F{current_excel_row}/D{current_excel_row}')
+            else:
+                cell_g = ws.cell(row=current_excel_row, column=7, value=0)
+            cell_g.fill = row_fill
+            cell_g.font = FONT_DATA
+            cell_g.alignment = CENTER_ALIGN
+            cell_g.border = THIN_BORDER
+            cell_g.number_format = '0.00%'
+
+            # 提审/创建
+            if row['创建方案数'] > 0:
+                cell_h = ws.cell(row=current_excel_row, column=8,
+                                 value=f'=F{current_excel_row}/C{current_excel_row}')
+            else:
+                cell_h = ws.cell(row=current_excel_row, column=8, value=0)
+            cell_h.fill = row_fill
+            cell_h.font = FONT_DATA
+            cell_h.alignment = CENTER_ALIGN
+            cell_h.border = THIN_BORDER
+            cell_h.number_format = '0.00%'
+
             ws.row_dimensions[current_excel_row].height = 22.0
             current_excel_row += 1
 
