@@ -15,6 +15,8 @@ from pathlib import Path
 import pandas as pd
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, Border, Side, PatternFill
+import urllib.request
+import os
 
 
 # ==================== 配置项 ====================
@@ -170,6 +172,184 @@ def build_output_df(account_agg, designer_agg):
 
 
 # ==================== 通用写入辅助 ====================
+
+def _generate_analysis_data(df):
+    """生成本地分析数据摘要"""
+    data_df = df.copy()
+    for col in ['创建方案数', '新增渲染方案数', '提审方案数']:
+        if col in data_df.columns:
+            data_df[col] = pd.to_numeric(data_df[col], errors='coerce').fillna(0)
+
+    total_create = int(data_df['创建方案数'].sum())
+    total_render = int(data_df['新增渲染方案数'].sum())
+    total_submit = int(data_df['提审方案数'].sum())
+    ratio_create = total_submit / total_create if total_create > 0 else 0
+    ratio_render = total_submit / total_render if total_render > 0 else 0
+
+    region_stats = data_df.groupby('区域').agg({
+        '创建方案数': 'sum',
+        '新增渲染方案数': 'sum',
+        '提审方案数': 'sum',
+        '经销商': 'count'
+    }).rename(columns={'经销商': '经销商数'})
+    region_stats['提审/创建'] = region_stats['提审方案数'] / region_stats['创建方案数']
+    region_stats['提审/渲染'] = region_stats['提审方案数'] / region_stats['新增渲染方案数']
+    region_stats = region_stats.sort_values('提审方案数', ascending=False)
+
+    top_dealers = data_df.nlargest(5, '提审方案数')[['区域', '经销商', '创建方案数', '新增渲染方案数', '提审方案数']]
+
+    low_conv = data_df[data_df['创建方案数'] >= 20].copy()
+    low_conv['转化率'] = low_conv['提审方案数'] / low_conv['创建方案数']
+    low_conv = low_conv[low_conv['转化率'] <= 0.1].sort_values('创建方案数', ascending=False)
+
+    return {
+        'total_create': total_create,
+        'total_render': total_render,
+        'total_submit': total_submit,
+        'ratio_create': ratio_create,
+        'ratio_render': ratio_render,
+        'region_stats': region_stats,
+        'top_dealers': top_dealers,
+        'low_conv': low_conv,
+    }
+
+
+def _build_analysis_prompt(analysis_data):
+    """构建给 AI 的分析 prompt"""
+    lines = [
+        '你是一位资深的数据分析师，请对以下经销商数据进行简要分析，给出核心结论、亮点、问题和建议。',
+        '',
+        '## 总体数据',
+        f'- 经销商总数：{int(analysis_data["region_stats"]["经销商数"].sum())} 家',
+        f'- 创建方案数：{analysis_data["total_create"]}',
+        f'- 渲染方案数：{analysis_data["total_render"]}',
+        f'- 提审方案数：{analysis_data["total_submit"]}',
+        f'- 整体提审/创建：{analysis_data["ratio_create"]:.2%}',
+        f'- 整体提审/渲染：{analysis_data["ratio_render"]:.2%}',
+        '',
+        '## 按大区统计（按提审数降序）',
+    ]
+    for region, row in analysis_data['region_stats'].iterrows():
+        ratio_c = row['提审/创建'] if not pd.isna(row['提审/创建']) else 0
+        ratio_r = row['提审/渲染'] if not pd.isna(row['提审/渲染']) else 0
+        lines.append(f'- {region}: 创建{int(row["创建方案数"])}, 渲染{int(row["新增渲染方案数"])}, 提审{int(row["提审方案数"])}, 提审/创建{ratio_c:.2%}, 提审/渲染{ratio_r:.2%}')
+
+    lines.extend(['', '## 提审数 TOP5 经销商'])
+    for idx, row in analysis_data['top_dealers'].iterrows():
+        lines.append(f'- {row["区域"]} {row["经销商"]}: 创建{int(row["创建方案数"])}, 渲染{int(row["新增渲染方案数"])}, 提审{int(row["提审方案数"])}')
+
+    lines.extend(['', '## 高创建低转化（创建>=20 且 提审/创建<=10%，需重点关注）'])
+    if len(analysis_data['low_conv']) == 0:
+        lines.append('- 无')
+    else:
+        for idx, row in analysis_data['low_conv'].iterrows():
+            lines.append(f'- {row["区域"]} {row["经销商"]}: 创建{int(row["创建方案数"])}, 提审{int(row["提审方案数"])}, 转化率{row["转化率"]:.2%}')
+
+    lines.extend(['', '请用中文输出，控制在 800 字以内，分点说明。'])
+    return '\n'.join(lines)
+
+
+def _local_analysis_text(analysis_data):
+    """没有 AI 配置时，生成本地分析文本"""
+    lines = [
+        '一、总体概况',
+        f'本月共 {len(analysis_data["region_stats"])} 个大区、{int(analysis_data["region_stats"]["经销商数"].sum())} 家经销商参与统计。',
+        f'创建方案 {analysis_data["total_create"]} 个，渲染方案 {analysis_data["total_render"]} 个，最终提审 {analysis_data["total_submit"]} 个。',
+        f'整体提审/创建转化率为 {analysis_data["ratio_create"]:.2%}，提审/渲染转化率为 {analysis_data["ratio_render"]:.2%}。',
+        '',
+        '二、大区表现',
+    ]
+    best_region = analysis_data['region_stats'].iloc[0]
+    worst_region = analysis_data['region_stats'].iloc[-1]
+    lines.append(f'提审数最高：{best_region.name}（提审 {int(best_region["提审方案数"])}，转化率 {best_region["提审/创建"]:.2%}）。')
+    lines.append(f'转化率最低：{worst_region.name}（提审 {int(worst_region["提审方案数"])}，转化率 {worst_region["提审/创建"]:.2%}）。')
+
+    lines.extend(['', '三、头部经销商'])
+    for idx, row in analysis_data['top_dealers'].head(3).iterrows():
+        lines.append(f'{row["区域"]} {row["经销商"]}：提审 {int(row["提审方案数"])} 个。')
+
+    lines.extend(['', '四、重点关注'])
+    if len(analysis_data['low_conv']) == 0:
+        lines.append('暂无高创建低转化的经销商。')
+    else:
+        lines.append(f'共有 {len(analysis_data["low_conv"])} 家经销商创建>=20 但转化率<=10%，建议跟进：')
+        for idx, row in analysis_data['low_conv'].head(5).iterrows():
+            lines.append(f'- {row["区域"]} {row["经销商"]}（创建 {int(row["创建方案数"])}，提审 {int(row["提审方案数"])}，转化率 {row["转化率"]:.2%}）')
+
+    lines.extend(['', '五、建议'])
+    lines.append('1. 重点关注西北区、东北区整体转化率偏低的经销商。')
+    lines.append('2. 对高创建低提审经销商进行一对一复盘，找到转化瓶颈。')
+    lines.append('3. 学习华东区及头部经销商的转化经验，复制推广。')
+    return '\n'.join(lines)
+
+
+def call_ai_analysis(prompt: str) -> str:
+    """调用 AI 进行数据分析，未配置 API 时返回空字符串"""
+    api_key = os.getenv('AI_API_KEY')
+    base_url = os.getenv('AI_BASE_URL', 'https://api.moonshot.cn/v1')
+    model = os.getenv('AI_MODEL', 'kimi-latest')
+
+    if not api_key:
+        return ''
+
+    try:
+        body = json.dumps({
+            'model': model,
+            'messages': [{'role': 'user', 'content': prompt}],
+            'temperature': 0.5,
+            'max_tokens': 1500,
+        }, ensure_ascii=False).encode('utf-8')
+        req = urllib.request.Request(
+            f'{base_url}/chat/completions',
+            data=body,
+            headers={
+                'Content-Type': 'application/json; charset=utf-8',
+                'Authorization': f'Bearer {api_key}',
+            },
+        )
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            result = json.loads(resp.read().decode('utf-8'))
+        return result['choices'][0]['message']['content']
+    except Exception as e:
+        print(f'AI 分析调用失败: {e}')
+        return ''
+
+
+def generate_analysis_text(df) -> str:
+    """生成数据分析文本，优先使用 AI，失败时 fallback 本地"""
+    analysis_data = _generate_analysis_data(df)
+    prompt = _build_analysis_prompt(analysis_data)
+    ai_text = call_ai_analysis(prompt)
+    if ai_text:
+        return ai_text
+    return _local_analysis_text(analysis_data)
+
+
+def write_analysis_sheet(wb, analysis_text: str):
+    """写入数据分析 sheet"""
+    ws = wb.create_sheet(title='数据分析')
+    ws.column_dimensions['A'].width = 100
+
+    # 标题
+    title_cell = ws['A1']
+    title_cell.value = '经销商数据分析报告'
+    title_cell.font = Font(name='黑体', size=16, bold=True, color='FFFFFF')
+    title_cell.fill = PatternFill('solid', fgColor='1F4E78')
+    title_cell.alignment = Alignment(horizontal='left', vertical='center')
+    ws.row_dimensions[1].height = 35
+
+    # 内容
+    lines = analysis_text.split('\n')
+    for idx, line in enumerate(lines, 2):
+        cell = ws.cell(row=idx, column=1, value=line)
+        cell.font = Font(name='微软雅黑', size=11)
+        cell.alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
+        ws.row_dimensions[idx].height = 22
+
+    # 边框
+    for row in range(1, len(lines) + 2):
+        ws.cell(row=row, column=1).border = THIN_BORDER
+
 
 def _write_header(ws, title, headers, max_col):
     """写入标题行和表头行"""
@@ -460,6 +640,14 @@ def write_formatted_excel_new(df, output_path, title='经销商数据'):
 
     # 冻结窗格：冻结前两行
     ws.freeze_panes = 'A3'
+
+    # 生成 AI 数据分析并写入第二张 sheet
+    try:
+        analysis_text = generate_analysis_text(df)
+        write_analysis_sheet(wb, analysis_text)
+        print('数据分析 sheet 已生成')
+    except Exception as e:
+        print(f'数据分析 sheet 生成失败: {e}')
 
     wb.save(output_path)
     print(f'新版美化报表已生成: {output_path}')
