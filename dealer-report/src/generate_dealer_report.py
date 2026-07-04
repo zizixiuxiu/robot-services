@@ -171,24 +171,25 @@ def build_output_df(account_agg, designer_agg):
 
 def _write_header(ws, title, headers, max_col):
     """写入标题行和表头行"""
-    # 标题行
-    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=max_col)
-    title_cell = ws['A1']
-    title_cell.value = title
-    title_cell.font = FONT_TITLE
-    title_cell.alignment = CENTER_ALIGN
-    title_cell.fill = fill(COLOR_TITLE_BG)
-    ws.row_dimensions[1].height = 55.0
+    # 标题行：A1 写标题，其他列写空字符串但统一设置填充/边框，
+    # 不合并单元格，避免 openpyxl 合并后部分列格式丢失
+    title_fill = fill(COLOR_TITLE_BG)
     for col in range(1, max_col + 1):
-        ws.cell(row=1, column=col).border = THIN_BORDER
+        cell = ws.cell(row=1, column=col, value=title if col == 1 else '')
+        cell.font = FONT_TITLE
+        cell.alignment = CENTER_ALIGN
+        cell.fill = title_fill
+        cell.border = THIN_BORDER
+    ws.row_dimensions[1].height = 55.0
 
     # 列标题
+    header_fill = fill(COLOR_HEADER_BG)
     for col, header in enumerate(headers, 1):
         cell = ws.cell(row=2, column=col)
         cell.value = header
         cell.font = FONT_HEADER
         cell.alignment = CENTER_ALIGN
-        cell.fill = fill(COLOR_HEADER_BG)
+        cell.fill = header_fill
         cell.border = THIN_BORDER
     ws.row_dimensions[2].height = 40.0
 
