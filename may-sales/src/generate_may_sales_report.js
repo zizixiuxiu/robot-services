@@ -21,6 +21,12 @@ const TEMPLATE_FILE = args[3] || DEFAULT_TEMPLATE;
 const OUTPUT_FILE = args[4] || DEFAULT_OUTPUT;
 // =============================================
 
+function normalizeWorkbook(inputPath, outputPath) {
+  // 用 SheetJS 读取再写入，自动展开共享公式，避免 ExcelJS 写入时报错
+  const wb = XLSX.readFile(inputPath);
+  XLSX.writeFile(wb, outputPath);
+}
+
 // 省份全称到简称的映射
 const PROVINCE_SHORT_MAP = {
   '北京市': '北京', '天津市': '天津', '上海市': '上海', '重庆市': '重庆',
@@ -259,13 +265,24 @@ async function main() {
   }
 
   console.log('读取模板（ExcelJS，保留格式）...');
+  const normalizedTemplate = '/tmp/' + path.basename(TEMPLATE_FILE) + '.normalized.xlsx';
+  await normalizeWorkbook(TEMPLATE_FILE, normalizedTemplate);
   const workbook = new ExcelJS.Workbook();
-  await workbook.xlsx.readFile(TEMPLATE_FILE);
+  await workbook.xlsx.readFile(normalizedTemplate);
 
   const sourceSheet = workbook.getWorksheet('Sheet1');
   const targetSheet = workbook.getWorksheet('Sheet1 (2)');
   if (!sourceSheet) throw new Error('模板中找不到 Sheet "Sheet1"');
   if (!targetSheet) throw new Error('模板中找不到 Sheet "Sheet1 (2)"');
+
+  // 清除 targetSheet 中所有共享公式，避免后续填充数据时 ExcelJS 写入报错
+  targetSheet.eachRow({ includeEmpty: true }, (row) => {
+    row.eachCell({ includeEmpty: true }, (cell) => {
+      if (cell.type === ExcelJS.ValueType.SharedFormula) {
+        cell.value = null;
+      }
+    });
+  });
 
   // 读取模板经销商列表，使用 经销商+省份 作为匹配键
   const templateDealers = {};
@@ -370,6 +387,7 @@ async function main() {
 }
 
 function round2(n) {
+  if (n === undefined || n === null || Number.isNaN(n) || n === '') return 0;
   return Math.round(n * 100) / 100;
 }
 
