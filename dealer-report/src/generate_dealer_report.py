@@ -35,6 +35,7 @@ FONT_TITLE = Font(name='黑体', size=18, bold=True, color='FFFFFF')
 FONT_HEADER = Font(name='黑体', size=11, bold=True, color='FFFFFF')
 FONT_DATA = Font(name='微软雅黑', size=10)
 FONT_TOTAL = Font(name='微软雅黑', size=11, bold=True)
+FONT_TOTAL_BLUE = Font(name='微软雅黑', size=11, bold=True, color='1F4E78')
 FONT_TOTAL_WHITE = Font(name='微软雅黑', size=11, bold=True, color='FFFFFF')
 
 # 边框样式
@@ -358,8 +359,8 @@ def write_formatted_excel_new(df, output_path, title='经销商数据'):
             cell_e.border = THIN_BORDER
             cell_e.number_format = '0%'
 
-            # 提审/渲染
-            if row['新增渲染方案数'] > 0:
+            # 提审/渲染：提审和渲染都为0时留空
+            if row['新增渲染方案数'] > 0 and row['提审方案数'] > 0:
                 cell_g = ws.cell(row=current_excel_row, column=7,
                                  value=f'=F{current_excel_row}/D{current_excel_row}')
                 cell_g.number_format = '0.00%'
@@ -370,8 +371,8 @@ def write_formatted_excel_new(df, output_path, title='经销商数据'):
             cell_g.alignment = CENTER_ALIGN
             cell_g.border = THIN_BORDER
 
-            # 提审/创建
-            if row['创建方案数'] > 0:
+            # 提审/创建：提审和创建都为0时留空
+            if row['创建方案数'] > 0 and row['提审方案数'] > 0:
                 cell_h = ws.cell(row=current_excel_row, column=8,
                                  value=f'=F{current_excel_row}/C{current_excel_row}')
                 cell_h.number_format = '0.00%'
@@ -395,7 +396,7 @@ def write_formatted_excel_new(df, output_path, title='经销商数据'):
 
         for col in range(1, 9):
             ws.cell(row=total_row, column=col).fill = total_fill
-            ws.cell(row=total_row, column=col).font = FONT_TOTAL
+            ws.cell(row=total_row, column=col).font = FONT_TOTAL_BLUE
             ws.cell(row=total_row, column=col).alignment = CENTER_ALIGN
             ws.cell(row=total_row, column=col).border = THIN_BORDER
 
