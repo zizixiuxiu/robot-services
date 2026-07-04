@@ -21,10 +21,44 @@ const TEMPLATE_FILE = args[3] || DEFAULT_TEMPLATE;
 const OUTPUT_FILE = args[4] || DEFAULT_OUTPUT;
 // =============================================
 
-function normalizeWorkbook(inputPath, outputPath) {
-  // 用 SheetJS 读取再写入，自动展开共享公式，避免 ExcelJS 写入时报错
-  const wb = XLSX.readFile(inputPath);
-  XLSX.writeFile(wb, outputPath);
+async function normalizeWorkbook(inputPath, outputPath) {
+  // 用 ExcelJS 读取模板，把共享公式展开为普通公式，再写入临时文件
+  // 这样可以保留原模板的格式（字体、边框、颜色等），同时避免 ExcelJS 保存时报
+  // "Shared Formula master must exist above and or left of clone" 错误
+  const wb = new ExcelJS.Workbook();
+  await wb.xlsx.readFile(inputPath);
+
+  wb.eachSheet((sheet) => {
+    // 第一遍：收集共享公式 master 单元格
+    const masters = {};
+    sheet.eachRow({ includeEmpty: true }, (row) => {
+      row.eachCell({ includeEmpty: true }, (cell) => {
+        if (cell.type === ExcelJS.ValueType.Formula && cell.value && typeof cell.value === 'object') {
+          const v = cell.value;
+          if (v.formula && v.ref) {
+            masters[cell.row] = v.formula;
+          }
+        }
+      });
+    });
+
+    // 第二遍：把 clone 单元格展开为普通公式
+    sheet.eachRow({ includeEmpty: true }, (row) => {
+      row.eachCell({ includeEmpty: true }, (cell) => {
+        if (cell.type === ExcelJS.ValueType.Formula && cell.value && typeof cell.value === 'object') {
+          const v = cell.value;
+          if (v.master && masters[v.master]) {
+            cell.value = { formula: masters[v.master], result: v.result };
+          } else if (v.formula && v.ref) {
+            // master 单元格本身保留为普通公式
+            cell.value = { formula: v.formula, result: v.result };
+          }
+        }
+      });
+    });
+  });
+
+  await wb.xlsx.writeFile(outputPath);
 }
 
 // 省份全称到简称的映射
@@ -265,24 +299,13 @@ async function main() {
   }
 
   console.log('读取模板（ExcelJS，保留格式）...');
-  const normalizedTemplate = '/tmp/' + path.basename(TEMPLATE_FILE) + '.normalized.xlsx';
-  await normalizeWorkbook(TEMPLATE_FILE, normalizedTemplate);
   const workbook = new ExcelJS.Workbook();
-  await workbook.xlsx.readFile(normalizedTemplate);
+  await workbook.xlsx.readFile(TEMPLATE_FILE);
 
   const sourceSheet = workbook.getWorksheet('Sheet1');
   const targetSheet = workbook.getWorksheet('Sheet1 (2)');
   if (!sourceSheet) throw new Error('模板中找不到 Sheet "Sheet1"');
   if (!targetSheet) throw new Error('模板中找不到 Sheet "Sheet1 (2)"');
-
-  // 清除 targetSheet 中所有共享公式，避免后续填充数据时 ExcelJS 写入报错
-  targetSheet.eachRow({ includeEmpty: true }, (row) => {
-    row.eachCell({ includeEmpty: true }, (cell) => {
-      if (cell.type === ExcelJS.ValueType.SharedFormula) {
-        cell.value = null;
-      }
-    });
-  });
 
   // 读取模板经销商列表，使用 经销商+省份 作为匹配键
   const templateDealers = {};
@@ -370,6 +393,16 @@ async function main() {
     }
     totalRow.getCell(parseInt(col)).value = { formula, result: 0 };
   }
+
+  // 保存前把 targetSheet 中所有公式转换为值，避免 ExcelJS 写入共享公式时报错
+  targetSheet.eachRow({ includeEmpty: true }, (row) => {
+    row.eachCell({ includeEmpty: true }, (cell) => {
+      if (cell.type === ExcelJS.ValueType.Formula) {
+        const result = cell.result;
+        cell.value = result !== undefined && result !== null ? result : null;
+      }
+    });
+  });
 
   // 保存
   try {

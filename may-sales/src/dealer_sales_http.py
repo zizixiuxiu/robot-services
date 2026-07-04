@@ -64,6 +64,16 @@ def _detect_file_type(filename: str) -> str:
     return 'unknown'
 
 
+def _detect_month_from_filenames(filenames: list) -> str:
+    """从文件名中提取月份（如 6月），返回数字字符串"""
+    import re
+    for fn in filenames:
+        m = re.search(r'(\d+)\s*月', fn)
+        if m:
+            return str(int(m.group(1)))
+    return ''
+
+
 def run_may_sales(zhcx_path: str, liansi_path: str, shejiang_path: str, template_path: str, output_path: str) -> dict:
     """调用 generate_may_sales_report.js"""
     if not SCRIPT_PATH.exists():
@@ -136,7 +146,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def _process_files(self, req: dict) -> dict:
         files = req.get('files', [])
-        logger.info("收到 5月业绩核对请求，文件数=%d", len(files))
+        order_date = req.get('order_date')
+        logger.info("收到 5月业绩核对请求，文件数=%d, order_date=%s", len(files), order_date)
         if not files or len(files) < 3:
             return {"success": False, "error": "需要至少 3 个文件：综合查询、联思系统、奢匠下单统计"}
 
@@ -183,7 +194,17 @@ class Handler(BaseHTTPRequestHandler):
         # 输出路径
         if not OUTPUT_DIR.exists():
             OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-        output_filename = '2026年5月销售部业绩核对表.xlsx'
+
+        # 根据文件名中的月份生成输出文件名，默认使用 order_date 的月份
+        month = _detect_month_from_filenames([f.get('filename', '') for f in files])
+        if not month and order_date:
+            try:
+                month = str(int(order_date.split('.')[1]))
+            except Exception:
+                month = '5'
+        if not month:
+            month = '5'
+        output_filename = f'2026年{month}月销售部业绩核对表.xlsx'
         output_path = str(OUTPUT_DIR / output_filename)
 
         t0 = time.time()
