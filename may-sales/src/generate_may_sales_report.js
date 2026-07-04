@@ -12,14 +12,31 @@ const DEFAULT_SHEJIANG = path.join(DEFAULT_BASE_DIR, '奢匠下单统计5月.xls
 const DEFAULT_TEMPLATE = process.env.DEFAULT_TEMPLATE || 'D:/wechat/xwechat_files/wxid_0fh4oxng8dq212_f810/msg/file/2026-06/2026年5月销售部业绩核对表 - 副本.xlsx';
 const DEFAULT_OUTPUT = path.join(DEFAULT_BASE_DIR, '2026年5月销售部业绩核对表.xlsx');
 
-// 支持命令行参数：node generate_may_sales_report.js [zhcx] [liansi] [shejiang] [template] [output]
+// 支持命令行参数：node generate_may_sales_report.js [zhcx] [liansi] [shejiang] [template] [output] [month]
 const args = process.argv.slice(2);
 const SRC_ZHCX = args[0] || DEFAULT_ZHCX;
 const SRC_LIANSI = args[1] || DEFAULT_LIANSI;
 const SRC_SHEJIANG = args[2] || DEFAULT_SHEJIANG;
 const TEMPLATE_FILE = args[3] || DEFAULT_TEMPLATE;
 const OUTPUT_FILE = args[4] || DEFAULT_OUTPUT;
+const MONTH_ARG = args[5] || '';
 // =============================================
+
+function detectMonthFromFilenames(filenames) {
+  // 从文件名中提取月份，如 "联思系统6月(1).xlsx" -> "6"
+  for (const fn of filenames) {
+    const m = fn.match(/(\d+)\s*月/);
+    if (m) return String(parseInt(m[1], 10));
+  }
+  return '';
+}
+
+function getReportMonth() {
+  if (MONTH_ARG) return String(parseInt(MONTH_ARG, 10));
+  const month = detectMonthFromFilenames([SRC_ZHCX, SRC_LIANSI, SRC_SHEJIANG]);
+  if (month) return month;
+  return String(new Date().getMonth() + 1);
+}
 
 async function normalizeWorkbook(inputPath, outputPath) {
   // 用 ExcelJS 读取模板，把共享公式展开为普通公式，再写入临时文件
@@ -392,6 +409,14 @@ async function main() {
       formula = `SUM(${letter}3:${letter}115)`;
     }
     totalRow.getCell(parseInt(col)).value = { formula, result: 0 };
+  }
+
+  // 更新标题月份
+  const reportMonth = getReportMonth();
+  const titleCell = targetSheet.getCell('A1');
+  if (titleCell.value && typeof titleCell.value === 'string') {
+    titleCell.value = titleCell.value.replace(/\d+\s*月/, `${reportMonth}月`);
+    console.log(`标题月份已更新为: ${reportMonth}月`);
   }
 
   // 保存前把 targetSheet 中所有公式转换为值，避免 ExcelJS 写入共享公式时报错

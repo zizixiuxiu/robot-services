@@ -74,7 +74,7 @@ def _detect_month_from_filenames(filenames: list) -> str:
     return ''
 
 
-def run_may_sales(zhcx_path: str, liansi_path: str, shejiang_path: str, template_path: str, output_path: str) -> dict:
+def run_may_sales(zhcx_path: str, liansi_path: str, shejiang_path: str, template_path: str, output_path: str, month: str = '') -> dict:
     """调用 generate_may_sales_report.js"""
     if not SCRIPT_PATH.exists():
         logger.error("找不到脚本: %s", SCRIPT_PATH)
@@ -89,6 +89,8 @@ def run_may_sales(zhcx_path: str, liansi_path: str, shejiang_path: str, template
             return {"success": False, "error": f"清理旧输出文件失败: {e}"}
 
     cmd = [NODE_EXE, str(SCRIPT_PATH), zhcx_path, liansi_path, shejiang_path, template_path, output_path]
+    if month:
+        cmd.append(month)
     logger.info("调用 Node.js: %s", " ".join(cmd))
     try:
         result = subprocess.run(
@@ -214,6 +216,7 @@ class Handler(BaseHTTPRequestHandler):
             file_map['shejiang'],
             template_path,
             output_path,
+            month,
         )
         result['cost_seconds'] = round(time.time() - t0, 3)
 
