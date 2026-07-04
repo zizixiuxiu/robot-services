@@ -732,6 +732,22 @@ def _handle_dealer_file(chat_id: str, message_id: str, file_key: str, file_name:
         _dealer_sales_final_timers[chat_id].cancel()
 
     # 启动新的 20 秒普通窗口
+    # 检查是否已经凑齐三类文件，凑齐立即处理
+    queue = _dealer_sales_queues[chat_id]
+    has_zhcx = any(_detect_may_sales_type(f["file_name"]) == "zhcx" for f in queue)
+    has_liansi = any(_detect_may_sales_type(f["file_name"]) == "liansi" for f in queue)
+    has_shejiang = any(_detect_may_sales_type(f["file_name"]) == "shejiang" for f in queue)
+
+    if has_zhcx and has_liansi and has_shejiang:
+        logger.info("[%s] 5月业绩核对三类文件已凑齐，立即处理", chat_id)
+        _send_text(chat_id, f"✅ 已收到三类文件，立即处理...")
+        timer = threading.Timer(0.5, _process_dealer_sales_batch, args=(chat_id, service_name, False))
+        timer.daemon = True
+        timer.start()
+        _dealer_sales_timers[chat_id] = timer
+        return
+
+    # 没凑齐，启动新的 20 秒普通窗口
     timer = threading.Timer(_DEALER_SALES_WINDOW, _process_dealer_sales_batch, args=(chat_id, service_name, False))
     timer.daemon = True
     timer.start()
