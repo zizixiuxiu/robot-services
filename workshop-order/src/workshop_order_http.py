@@ -24,7 +24,7 @@ sys.path.insert(0, str(WORK_DIR))
 # 输出根目录：默认在项目 data/output，Docker 中通过环境变量覆盖为 /app/data/output
 OUTPUT_BASE = Path(os.getenv("OUTPUT_BASE", str(WORK_DIR.parent / "data" / "output")))
 
-from make_workshop_order import transform, convert_xls_to_xlsx
+from make_workshop_order import transform, convert_xls_to_xlsx, warm_xls_converter
 
 
 # ==================== 日志配置 ====================
@@ -51,7 +51,9 @@ def _convert_xls_to_xlsx(input_path: Path) -> Path:
 
     xlsx_path = input_path.with_suffix(".xlsx")
     logger.info("xls 转 xlsx: %s -> %s", input_path, xlsx_path)
+    t0 = time.time()
     convert_xls_to_xlsx(input_path, xlsx_path)
+    logger.info("xls 转 xlsx 完成, cost=%.3fs", time.time() - t0)
     return xlsx_path
 
 
@@ -140,6 +142,7 @@ class Handler(BaseHTTPRequestHandler):
                 },
                 "output_filename": output_name,
                 "stats": stats,
+                "warnings": stats.get("warnings", []),
                 "cost_seconds": cost,
             }
         except Exception as e:
@@ -227,6 +230,12 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def run(port=8006):
+    try:
+        cost = warm_xls_converter()
+        logger.info("LibreOffice xls 转换器预热完成, cost=%.3fs", cost)
+    except Exception as e:
+        logger.warning("LibreOffice xls 转换器预热失败，首次 .xls 转换可能变慢: %s", e)
+
     server = ThreadingHTTPServer(("0.0.0.0", port), Handler)
     logger.info("[workshop-order] HTTP 服务启动于 http://0.0.0.0:%d", port)
     server.serve_forever()
