@@ -1,4 +1,3 @@
-# DEPRECATED: 已迁移至 factory-common/factory_common/bom_utils.py，本文件待清理
 """BOM MCP 服务公共工具函数"""
 import os
 import re

@@ -6,23 +6,25 @@ Quote maker HTTP service.
 Port: 8007
 API: POST /process
 """
+import argparse
 import base64
+import json
+import logging
 import os
 import re
 import shutil
 import sys
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import urlparse
 
 WORK_DIR = Path(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, str(WORK_DIR))
-# 公共库 factory-common（Docker 中通过 ENV PYTHONPATH=/app 提供）
-sys.path.insert(0, str(WORK_DIR.parent.parent / "factory-common"))
 
-from factory_common.logging_utils import setup_logging  # noqa: E402
-from factory_common.http_skeleton import run_process_server, _encode_output_file  # noqa: E402
-
+OUTPUT_BASE = Path(os.getenv("OUTPUT_BASE", str(WORK_DIR.parent / "data" / "output")))
 DEFAULT_TEMPLATE = Path(os.getenv("QUOTE_TEMPLATE", str(WORK_DIR / "templates" / "quote_template.xlsx")))
 
 from make_quote import (  # noqa: E402
@@ -37,7 +39,19 @@ from make_quote import (  # noqa: E402
 )
 
 
-logger = setup_logging("quote-maker")
+LOG_DIR = Path(os.getenv("LOG_DIR", str(WORK_DIR.parent / "logs")))
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+LOG_FILE = LOG_DIR / "quote_maker_http.log"
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[
+        logging.FileHandler(LOG_FILE, encoding="utf-8"),
+        logging.StreamHandler(sys.stdout),
+    ],
+)
+logger = logging.getLogger("quote-maker")
 
 
 def _safe_stem(filename: str) -> str:
@@ -74,7 +88,7 @@ def _stem_for_order(base: str, order_no: str | None) -> str:
 
 def _quote_output_name(base: str, order_no: str | None = None) -> str:
     stem = _stem_for_order(base, order_no)
-    return f"{stem}报价单.xlsx"
+    return f"{stem}\u62a5\u4ef7\u5355.xlsx"
 
 
 def _decode_to_file(content_b64: str, path: Path) -> Path:
@@ -82,6 +96,24 @@ def _decode_to_file(content_b64: str, path: Path) -> Path:
     with open(path, "wb") as fh:
         fh.write(base64.b64decode(content_b64))
     return path
+
+
+def _encode_output_file(file_path: Path, filename: str | None = None) -> dict:
+    try:
+        with open(file_path, "rb") as fh:
+            b64 = base64.b64encode(fh.read()).decode("utf-8")
+        return {
+            "path": str(file_path),
+            "filename": filename or file_path.name,
+            "file_content": b64,
+        }
+    except Exception as exc:
+        logger.error("Failed to read output file: %s, error=%s", file_path, exc)
+        return {
+            "path": str(file_path),
+            "filename": filename or file_path.name,
+            "error": f"读取文件内容失败: {exc}",
+        }
 
 
 def _resolve_template(req: dict, tmpdir: Path) -> Path:
@@ -102,18 +134,22 @@ def _resolve_reference(req: dict, tmpdir: Path) -> Path | None:
     return _decode_to_file(reference_content, tmpdir / reference_name)
 
 
-def process_quote(input_path: str, output_dir: str, req: dict) -> dict:
-    """骨架 process_fn：input_path 已由骨架解码落盘，output_dir 已由骨架创建。"""
+def _process_single(req: dict) -> dict:
+    file_content = req.get("file_content")
     filename = req.get("filename", "input.xls")
-    input_path = Path(input_path)
-    output_dir = Path(output_dir)
+    if not file_content:
+        return {"success": False, "error": "缺少 file_content"}
 
     tmpdir = Path(tempfile.mkdtemp(prefix="quote_maker_"))
     try:
+        input_path = _decode_to_file(file_content, tmpdir / filename)
         template_path = _resolve_template(req, tmpdir)
         reference_path = _resolve_reference(req, tmpdir)
 
         base = _safe_stem(filename)
+        timestamp = str(int(time.time()))
+        output_dir = OUTPUT_BASE / f"output_http_{base}_{timestamp}"
+        output_dir.mkdir(parents=True, exist_ok=True)
 
         output_entries = []
         t0 = time.time()
@@ -122,7 +158,7 @@ def process_quote(input_path: str, output_dir: str, req: dict) -> dict:
             output_path = output_dir / output_name
             shutil.copyfile(reference_path, output_path)
             apply_quote_page_background(output_path)
-            output_entries.append(_encode_output_file(output_path, logger, filename=output_name))
+            output_entries.append(_encode_output_file(output_path, output_name))
         else:
             parsed = parse_quote_input(input_path)
             source_items = parsed.items
@@ -179,7 +215,7 @@ def process_quote(input_path: str, output_dir: str, req: dict) -> dict:
                             order_no=None,
                             hardware_items=filtered_hardware,
                         )
-                    output_entries.append(_encode_output_file(output_path, logger, filename=output_name))
+                    output_entries.append(_encode_output_file(output_path, output_name))
             else:
                 # 按区域分表时，保持原来的按完整订单编号分文件
                 for order_no in orders:
@@ -208,7 +244,7 @@ def process_quote(input_path: str, output_dir: str, req: dict) -> dict:
                             order_no=order_no,
                             hardware_items=source_hardware_items,
                         )
-                    output_entries.append(_encode_output_file(output_path, logger, filename=output_name))
+                    output_entries.append(_encode_output_file(output_path, output_name))
 
         cost = round(time.time() - t0, 3)
         if not output_entries:
@@ -236,16 +272,83 @@ def process_quote(input_path: str, output_dir: str, req: dict) -> dict:
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 
+class Handler(BaseHTTPRequestHandler):
+    def log_message(self, format, *args):
+        logger.info("%s - %s", self.address_string(), format % args)
+
+    def _send_json(self, status_code: int, data: dict):
+        body = json.dumps(data, ensure_ascii=False).encode("utf-8")
+        self.send_response(status_code)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        parsed = urlparse(self.path)
+        if parsed.path not in ("/", "/health"):
+            self._send_json(404, {"error": "未知接口"})
+            return
+        self._send_json(200, {"status": "ok", "service": "quote-maker", "port": 8007})
+
+    def do_POST(self):
+        parsed = urlparse(self.path)
+        if parsed.path not in ("/process", "/convert"):
+            self._send_json(404, {"error": "未知接口，请用 POST /process 或 POST /convert"})
+            return
+
+        content_len = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_len)
+        try:
+            req = json.loads(body.decode("utf-8"))
+        except Exception:
+            self._send_json(400, {"error": "请求体必须是 JSON"})
+            return
+
+        files = req.get("files")
+        if files and isinstance(files, list):
+            max_workers = max(1, min(len(files), int(os.getenv("QUOTE_MAX_WORKERS", "1"))))
+            results = []
+            output_files = {}
+            has_error = False
+            t0 = time.time()
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                future_to_idx = {executor.submit(_process_single, item): i for i, item in enumerate(files)}
+                for future in as_completed(future_to_idx):
+                    idx = future_to_idx[future]
+                    try:
+                        res = future.result()
+                    except Exception as exc:
+                        logger.exception("Batch item %d failed", idx)
+                        res = {"success": False, "error": f"处理异常: {exc}"}
+                    results.append((idx, res))
+                    if res.get("success"):
+                        output_files.update(res.get("output_files", {}))
+                    else:
+                        has_error = True
+            results.sort(key=lambda item: item[0])
+            results = [item[1] for item in results]
+            self._send_json(200, {
+                "success": not has_error or bool(output_files),
+                "batch": True,
+                "count": len(files),
+                "results": results,
+                "output_files": output_files,
+                "cost_seconds": round(time.time() - t0, 3),
+            })
+            return
+
+        self._send_json(200, _process_single(req))
+
+
+def run(port: int = 8007):
+    server = ThreadingHTTPServer(("0.0.0.0", port), Handler)
+    logger.info("[quote-maker] HTTP service started at http://0.0.0.0:%d", port)
+    server.serve_forever()
+
+
 if __name__ == "__main__":
-    run_process_server(
-        service_name="quote-maker",
-        default_port=8007,
-        process_fn=process_quote,
-        logger=logger,
-        max_workers_env="QUOTE_MAX_WORKERS",
-        default_max_workers=1,
-        default_output_base=WORK_DIR.parent / "data" / "output",
-        path_aliases=("/convert",),
-        missing_file_error="缺少 file_content",
-        get_paths=("/", "/health"),
-    )
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--port", type=int, default=8007)
+    args = parser.parse_args()
+    run(args.port)

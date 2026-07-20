@@ -5,11 +5,15 @@ services:
     build:
       context: ../..
       dockerfile: deploy/docker/Dockerfile
+      additional_contexts:
+        # 公共库在仓库根目录（构建上下文之外）
+        factory-common: ../../..
     container_name: workshop-order-8006
     ports:
       - "8006:8006"
     volumes:
       - ../../src:/app/src:ro
+      - ../../../factory-common/factory_common:/app/factory_common:ro
       - ../../data/output:/app/data/output
       - ../../logs:/app/logs
     environment:

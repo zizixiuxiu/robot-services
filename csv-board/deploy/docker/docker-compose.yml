@@ -5,11 +5,14 @@ services:
     build:
       context: ../..
       dockerfile: deploy/docker/Dockerfile
+      additional_contexts:
+        factory-common: ../../..
     container_name: csv-board-8004
     ports:
       - "0.0.0.0:8004:8004"
     volumes:
       - ../../src:/app/src:ro
+      - ../../../factory-common/factory_common:/app/factory_common:ro
       - ../../data/output:/app/data/output
       - ../../logs:/app/logs
     environment:

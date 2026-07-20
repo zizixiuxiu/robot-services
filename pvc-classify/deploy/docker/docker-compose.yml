@@ -5,11 +5,14 @@ services:
     build:
       context: ../..
       dockerfile: deploy/docker/Dockerfile
+      additional_contexts:
+        factory-common: ../../..   # 仓库根目录（公共库）
     container_name: pvc-classify-8005
     ports:
       - "0.0.0.0:8005:8005"
     volumes:
       - ../../src:/app/src:ro
+      - ../../../factory-common/factory_common:/app/factory_common:ro
       - ../../data/output:/app/data/output
       - ../../logs:/app/logs
     environment:

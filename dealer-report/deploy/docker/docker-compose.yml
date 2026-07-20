@@ -5,17 +5,24 @@ services:
     build:
       context: ../..
       dockerfile: deploy/docker/Dockerfile
+      additional_contexts:
+        # 公共库在仓库根目录（构建上下文之外）
+        factory-common: ../../..
     container_name: dealer-report-8008
     ports:
       - "8008:8008"
     volumes:
       - ../../src:/app/src:ro
+      - ../../../factory-common/factory_common:/app/factory_common:ro
       - ../../data/output:/app/data/output
       - ../../logs:/app/logs
     environment:
       - PYTHONUNBUFFERED=1
       - OUTPUT_DIR=/app/data/output
       - LOG_DIR=/app/logs
+      - AI_API_KEY=${AI_API_KEY:-}
+      - AI_BASE_URL=${AI_BASE_URL:-https://api.deepseek.com/v1}
+      - AI_MODEL=${AI_MODEL:-deepseek-v4-flash}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8008/health')"]
       interval: 30s

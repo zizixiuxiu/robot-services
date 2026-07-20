@@ -22,6 +22,10 @@ RUN npm install
 COPY src/dealer_sales_http.py src/generate_may_sales_report.js ./
 COPY src/templates ./templates
 
+# 公共库 factory-common（来自 compose additional_contexts，源在仓库根目录）
+COPY --from=factory-common factory-common/factory_common /app/factory_common
+ENV PYTHONPATH=/app
+
 # 输出目录
 RUN mkdir -p /app/output_may_sales
 

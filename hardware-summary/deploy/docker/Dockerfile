@@ -10,6 +10,10 @@ RUN pip install --no-cache-dir -r config/requirements.txt
 # 复制应用代码（运行时通常由 volume 覆盖，用于保证镜像完整）
 COPY src/ ./src/
 
+# 公共库 factory-common（来自 compose additional_contexts，源在仓库根目录）
+COPY --from=factory-common factory-common/factory_common /app/factory_common
+ENV PYTHONPATH=/app
+
 # 输出目录
 RUN mkdir -p /app/data/output
 

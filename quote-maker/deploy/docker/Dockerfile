@@ -8,6 +8,10 @@ RUN pip install --no-cache-dir -r config/requirements.txt
 
 COPY src/ ./src/
 
+# 公共库 factory-common（来自 compose additional_contexts，源在仓库根目录）
+COPY --from=factory-common factory-common/factory_common /app/factory_common
+ENV PYTHONPATH=/app
+
 RUN mkdir -p /app/data/output /app/logs
 
 EXPOSE 8007
