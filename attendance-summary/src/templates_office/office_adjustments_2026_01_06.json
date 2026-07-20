@@ -1,0 +1,18 @@
+{
+  "months": {
+    "3": {
+      "summary_single_as_out_dates": [
+        {
+          "name": "向锋",
+          "days": [21, 28]
+        }
+      ]
+    },
+    "4": {
+      "exclude_names": ["张雪莲"]
+    },
+    "6": {
+      "summary_exclude_names": ["蒋进"]
+    }
+  }
+}

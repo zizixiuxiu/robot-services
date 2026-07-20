@@ -13,10 +13,14 @@ import re
 from pathlib import Path
 
 import pandas as pd
+import numpy as np
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, Border, Side, PatternFill
 import urllib.request
 import os
+import json
+
+from dealer_analysis import prepare_dealer_df, add_analysis_sheets
 
 
 # ==================== 配置项 ====================
@@ -202,6 +206,38 @@ def _generate_analysis_data(df):
     low_conv['转化率'] = low_conv['提审方案数'] / low_conv['创建方案数']
     low_conv = low_conv[low_conv['转化率'] <= 0.1].sort_values('创建方案数', ascending=False)
 
+    # 漏斗数据
+    funnel = {
+        'total_create': total_create,
+        'total_render': total_render,
+        'total_submit': total_submit,
+        'render_rate': total_render / total_create if total_create > 0 else 0,
+        'submit_rate': total_submit / total_create if total_create > 0 else 0,
+        'render_to_submit': total_submit / total_render if total_render > 0 else 0,
+    }
+
+    # 转化分层（仅统计有创建的经销商）
+    dealer_conv = data_df[data_df['创建方案数'] > 0].copy()
+    dealer_conv['转化率'] = dealer_conv['提审方案数'] / dealer_conv['创建方案数']
+    tier_defs = [
+        ('高转化（≥20%）', dealer_conv['转化率'] >= 0.2),
+        ('中转化（10%-20%）', (dealer_conv['转化率'] >= 0.1) & (dealer_conv['转化率'] < 0.2)),
+        ('低转化（<10% 且 >0%）', (dealer_conv['转化率'] > 0) & (dealer_conv['转化率'] < 0.1)),
+        ('无转化（0%）', dealer_conv['转化率'] == 0),
+    ]
+    conversion_tiers = [(name, int(mask.sum())) for name, mask in tier_defs]
+
+    # 沉睡经销商：创建>=20 且 提审=0
+    sleeping = data_df[(data_df['创建方案数'] >= 20) & (data_df['提审方案数'] == 0)].sort_values(
+        '创建方案数', ascending=False
+    )[['区域', '经销商', '创建方案数', '新增渲染方案数', '提审方案数']]
+
+    # 区域贡献
+    region_contrib = region_stats.copy()
+    region_contrib['创建占比'] = region_contrib['创建方案数'] / total_create if total_create > 0 else 0
+    region_contrib['渲染占比'] = region_contrib['新增渲染方案数'] / total_render if total_render > 0 else 0
+    region_contrib['提审占比'] = region_contrib['提审方案数'] / total_submit if total_submit > 0 else 0
+
     return {
         'total_create': total_create,
         'total_render': total_render,
@@ -211,15 +247,65 @@ def _generate_analysis_data(df):
         'region_stats': region_stats,
         'top_dealers': top_dealers,
         'low_conv': low_conv,
+        'funnel': funnel,
+        'conversion_tiers': conversion_tiers,
+        'sleeping': sleeping,
+        'region_contrib': region_contrib,
     }
 
 
+ANALYSIS_JSON_SCHEMA = """{
+  "核心结论": "200字以内的总体判断，指出转化效率和主要问题",
+  "关键指标": {
+    "提审/创建": "如：17.00%",
+    "提审/渲染": "如：28.17%",
+    "最佳大区": "如：华东区（23.94%）",
+    "最差大区": "如：西北区（11.93%）"
+  },
+  "漏斗分析": {
+    "创建方案数": 1253,
+    "渲染方案数": 756,
+    "提审方案数": 213,
+    "渲染率": "60.33%",
+    "提审率": "17.00%",
+    "渲染到提审": "28.17%",
+    "ai建议": "针对漏斗流失环节的1-2句建议"
+  },
+  "大区排名": [
+    {"大区": "西南区", "提审数": 57, "转化率": "18.45%", "评价": "..."}
+  ],
+  "区域贡献": [
+    {"大区": "西南区", "创建占比": "20.1%", "渲染占比": "18.5%", "提审占比": "26.8%", "贡献评级": "A", "ai建议": "..."}
+  ],
+  "转化分层": [
+    {"分层": "高转化（≥20%）", "经销商数": 20, "占比": "13.6%", "ai建议": "..."}
+  ],
+  "头部经销商": [
+    {"排名": 1, "经销商": "...", "提审数": 26, "亮点": "..."}
+  ],
+  "沉睡经销商": [
+    {"区域": "...", "经销商": "...", "创建方案数": 100, "渲染方案数": 50, "提审方案数": 0, "诊断": "..."}
+  ],
+  "问题诊断": [
+    {"问题": "...", "涉及经销商": "...", "影响": "...", "建议": "..."}
+  ],
+  "行动建议": [
+    "建议1",
+    "建议2",
+    "建议3"
+  ]
+}"""
+
+
 def _build_analysis_prompt(analysis_data):
-    """构建给 AI 的分析 prompt"""
+    """构建给 AI 的分析 prompt，要求返回固定 JSON"""
     lines = [
-        '你是一位资深的数据分析师，请对以下经销商数据进行简要分析，给出核心结论、亮点、问题和建议。',
+        '你是一位资深的数据分析师，请对以下经销商数据进行分析。',
+        '必须严格按下方 JSON Schema 返回结果，不要输出 JSON 以外的任何内容（不要加 markdown 代码块标记）：',
         '',
-        '## 总体数据',
+        ANALYSIS_JSON_SCHEMA,
+        '',
+        '## 输入数据',
         f'- 经销商总数：{int(analysis_data["region_stats"]["经销商数"].sum())} 家',
         f'- 创建方案数：{analysis_data["total_create"]}',
         f'- 渲染方案数：{analysis_data["total_render"]}',
@@ -245,49 +331,201 @@ def _build_analysis_prompt(analysis_data):
         for idx, row in analysis_data['low_conv'].iterrows():
             lines.append(f'- {row["区域"]} {row["经销商"]}: 创建{int(row["创建方案数"])}, 提审{int(row["提审方案数"])}, 转化率{row["转化率"]:.2%}')
 
-    lines.extend(['', '请用中文输出，控制在 800 字以内，分点说明。'])
+    lines.extend(['', '## 漏斗数据'])
+    funnel = analysis_data['funnel']
+    lines.append(f'- 创建{int(funnel["total_create"])} → 渲染{int(funnel["total_render"])}（渲染率{funnel["render_rate"]:.2%}）→ 提审{int(funnel["total_submit"])}（提审率{funnel["submit_rate"]:.2%}，渲染到提审{funnel["render_to_submit"]:.2%}）')
+
+    lines.extend(['', '## 经销商转化分层（按创建>0的经销商转化率）'])
+    for name, count in analysis_data['conversion_tiers']:
+        lines.append(f'- {name}: {count} 家')
+
+    lines.extend(['', '## 沉睡经销商（创建>=20 且 提审=0）'])
+    if len(analysis_data['sleeping']) == 0:
+        lines.append('- 无')
+    else:
+        for idx, row in analysis_data['sleeping'].head(10).iterrows():
+            lines.append(f'- {row["区域"]} {row["经销商"]}: 创建{int(row["创建方案数"])}, 渲染{int(row["新增渲染方案数"])}, 提审{int(row["提审方案数"])}')
+
+    lines.extend(['', '## 区域贡献（按提审占比降序）'])
+    contrib = analysis_data['region_contrib'].sort_values('提审占比', ascending=False)
+    for region, row in contrib.iterrows():
+        lines.append(f'- {region}: 创建占比{row["创建占比"]:.2%}, 渲染占比{row["渲染占比"]:.2%}, 提审占比{row["提审占比"]:.2%}')
+
+    lines.extend(['', '请确保 JSON 合法、字段完整，分析透彻、建议具体。'])
     return '\n'.join(lines)
 
 
-def _local_analysis_text(analysis_data):
-    """没有 AI 配置时，生成本地分析文本"""
-    lines = [
-        '一、总体概况',
-        f'本月共 {len(analysis_data["region_stats"])} 个大区、{int(analysis_data["region_stats"]["经销商数"].sum())} 家经销商参与统计。',
-        f'创建方案 {analysis_data["total_create"]} 个，渲染方案 {analysis_data["total_render"]} 个，最终提审 {analysis_data["total_submit"]} 个。',
-        f'整体提审/创建转化率为 {analysis_data["ratio_create"]:.2%}，提审/渲染转化率为 {analysis_data["ratio_render"]:.2%}。',
-        '',
-        '二、大区表现',
-    ]
+def _local_analysis_json(analysis_data):
+    """没有 AI 配置时，生成固定 JSON 结构的本地分析"""
     best_region = analysis_data['region_stats'].iloc[0]
     worst_region = analysis_data['region_stats'].iloc[-1]
-    lines.append(f'提审数最高：{best_region.name}（提审 {int(best_region["提审方案数"])}，转化率 {best_region["提审/创建"]:.2%}）。')
-    lines.append(f'转化率最低：{worst_region.name}（提审 {int(worst_region["提审方案数"])}，转化率 {worst_region["提审/创建"]:.2%}）。')
 
-    lines.extend(['', '三、头部经销商'])
-    for idx, row in analysis_data['top_dealers'].head(3).iterrows():
-        lines.append(f'{row["区域"]} {row["经销商"]}：提审 {int(row["提审方案数"])} 个。')
+    region_ranking = []
+    for region, row in analysis_data['region_stats'].iterrows():
+        ratio_c = row['提审/创建'] if not pd.isna(row['提审/创建']) else 0
+        if ratio_c >= 0.2:
+            evaluation = '转化优秀'
+        elif ratio_c >= 0.15:
+            evaluation = '转化良好'
+        elif ratio_c > 0:
+            evaluation = '转化偏弱'
+        else:
+            evaluation = '无提审'
+        region_ranking.append({
+            '大区': region,
+            '提审数': int(row['提审方案数']),
+            '转化率': f'{ratio_c:.2%}',
+            '评价': evaluation,
+        })
 
-    lines.extend(['', '四、重点关注'])
-    if len(analysis_data['low_conv']) == 0:
-        lines.append('暂无高创建低转化的经销商。')
+    top_dealers = []
+    for i, (idx, row) in enumerate(analysis_data['top_dealers'].iterrows(), 1):
+        top_dealers.append({
+            '排名': i,
+            '经销商': f'{row["区域"]} {row["经销商"]}',
+            '提审数': int(row['提审方案数']),
+            '亮点': '提审规模领先' if i <= 2 else '提审贡献突出',
+        })
+
+    # 漏斗分析
+    funnel = analysis_data['funnel']
+    if funnel['render_rate'] < 0.5:
+        funnel_advice = '创建到渲染流失严重，建议优化渲染工具培训或渲染流程引导。'
+    elif funnel['submit_rate'] < 0.15:
+        funnel_advice = '渲染到提审转化偏低，建议加强方案报价、客户跟进和下单激励。'
     else:
-        lines.append(f'共有 {len(analysis_data["low_conv"])} 家经销商创建>=20 但转化率<=10%，建议跟进：')
-        for idx, row in analysis_data['low_conv'].head(5).iterrows():
-            lines.append(f'- {row["区域"]} {row["经销商"]}（创建 {int(row["创建方案数"])}，提审 {int(row["提审方案数"])}，转化率 {row["转化率"]:.2%}）')
+        funnel_advice = '漏斗整体健康，建议保持并复制高效打法。'
 
-    lines.extend(['', '五、建议'])
-    lines.append('1. 重点关注西北区、东北区整体转化率偏低的经销商。')
-    lines.append('2. 对高创建低提审经销商进行一对一复盘，找到转化瓶颈。')
-    lines.append('3. 学习华东区及头部经销商的转化经验，复制推广。')
-    return '\n'.join(lines)
+    # 区域贡献
+    region_contrib_rows = []
+    contrib_sorted = analysis_data['region_contrib'].sort_values('提审占比', ascending=False)
+    for i, (region, row) in enumerate(contrib_sorted.iterrows(), 1):
+        if i <= 2:
+            rating = 'A'
+            advice = '核心贡献区，重点资源倾斜并复制经验。'
+        elif row['提审占比'] >= 0.15:
+            rating = 'B'
+            advice = '贡献稳定，可进一步挖掘潜力。'
+        elif row['提审占比'] > 0:
+            rating = 'C'
+            advice = '贡献偏弱，需诊断转化卡点。'
+        else:
+            rating = 'D'
+            advice = '本月无提审，需紧急激活。'
+        region_contrib_rows.append({
+            '大区': region,
+            '创建占比': f'{row["创建占比"]:.2%}',
+            '渲染占比': f'{row["渲染占比"]:.2%}',
+            '提审占比': f'{row["提审占比"]:.2%}',
+            '贡献评级': rating,
+            'ai建议': advice,
+        })
+
+    # 转化分层
+    total_with_create = sum(c for _, c in analysis_data['conversion_tiers'])
+    tier_rows = []
+    for name, count in analysis_data['conversion_tiers']:
+        pct = count / total_with_create if total_with_create > 0 else 0
+        if '高转化' in name:
+            advice = '树立标杆，组织经验分享。'
+        elif '中转化' in name:
+            advice = '重点跟进，推动向高转化跃迁。'
+        elif '低转化' in name:
+            advice = '排查报价/设计/客户决策卡点，一对一复盘。'
+        else:
+            advice = '启动预警，排查是否已停止合作或需专项扶持。'
+        tier_rows.append({
+            '分层': name,
+            '经销商数': count,
+            '占比': f'{pct:.2%}',
+            'ai建议': advice,
+        })
+
+    # 沉睡经销商
+    sleeping_rows = []
+    for idx, row in analysis_data['sleeping'].head(10).iterrows():
+        reason = '有渲染无提审，可能在报价/客户确认环节卡单' if row['新增渲染方案数'] > 0 else '创建后未渲染，可能在设计效率或客户意向不足'
+        sleeping_rows.append({
+            '区域': row['区域'],
+            '经销商': row['经销商'],
+            '创建方案数': int(row['创建方案数']),
+            '渲染方案数': int(row['新增渲染方案数']),
+            '提审方案数': int(row['提审方案数']),
+            '诊断': reason,
+        })
+
+    problems = []
+    if len(analysis_data['low_conv']) > 0:
+        names = '、'.join([f'{row["区域"]} {row["经销商"]}' for idx, row in analysis_data['low_conv'].head(5).iterrows()])
+        problems.append({
+            '问题': '高创建低转化',
+            '涉及经销商': names,
+            '影响': f'共 {len(analysis_data["low_conv"])} 家经销商创建>=20 但转化率<=10%，大量方案未形成订单',
+            '建议': '逐家复盘，排查报价、设计、客户跟进等环节卡点',
+        })
+
+    zero_regions = analysis_data['region_stats'][analysis_data['region_stats']['提审方案数'] == 0]
+    if len(zero_regions) > 0:
+        problems.append({
+            '问题': '部分大区无提审',
+            '涉及经销商': '、'.join(zero_regions.index.tolist()),
+            '影响': '该大区本月未产生任何正式订单',
+            '建议': '大区经理重点走访，激活经销商下单',
+        })
+
+    problems.append({
+        '问题': '整体转化率偏低',
+        '涉及经销商': '全部经销商',
+        '影响': f'整体提审/创建仅 {analysis_data["ratio_create"]:.2%}，大量设计资源投入未转化为营收',
+        '建议': '建立转化跟进机制，提升渲染到提审的闭环效率',
+    })
+
+    suggestions = [
+        f'重点提升 {worst_region.name} 等转化率偏低大区的跟进效率',
+        '对高创建低转化经销商进行一对一复盘，找出报价/设计/客户决策卡点',
+        f'推广 {best_region.name} 及头部经销商的转化经验',
+        '建立"创建→渲染→提审"周跟进机制，减少方案流失',
+        '对 0 提审经销商启动预警和专项扶持',
+    ]
+
+    return {
+        '核心结论': (
+            f'本月共 {len(analysis_data["region_stats"])} 个大区、{int(analysis_data["region_stats"]["经销商数"].sum())} 家经销商参与统计，'
+            f'创建方案 {analysis_data["total_create"]} 个、渲染 {analysis_data["total_render"]} 个、提审 {analysis_data["total_submit"]} 个。'
+            f'整体提审/创建 {analysis_data["ratio_create"]:.2%}、提审/渲染 {analysis_data["ratio_render"]:.2%}，转化率整体偏低。'
+            f'{best_region.name} 表现最佳（转化率 {best_region["提审/创建"]:.2%}），{worst_region.name} 转化率最低（{worst_region["提审/创建"]:.2%}）。'
+            '建议重点跟进高创建低转化经销商，提升从设计到下单的闭环效率。'
+        ),
+        '关键指标': {
+            '提审/创建': f'{analysis_data["ratio_create"]:.2%}',
+            '提审/渲染': f'{analysis_data["ratio_render"]:.2%}',
+            '最佳大区': f'{best_region.name}（{best_region["提审/创建"]:.2%}）',
+            '最差大区': f'{worst_region.name}（{worst_region["提审/创建"]:.2%}）',
+        },
+        '漏斗分析': {
+            '创建方案数': int(funnel['total_create']),
+            '渲染方案数': int(funnel['total_render']),
+            '提审方案数': int(funnel['total_submit']),
+            '渲染率': f'{funnel["render_rate"]:.2%}',
+            '提审率': f'{funnel["submit_rate"]:.2%}',
+            '渲染到提审': f'{funnel["render_to_submit"]:.2%}',
+            'ai建议': funnel_advice,
+        },
+        '大区排名': region_ranking,
+        '区域贡献': region_contrib_rows,
+        '转化分层': tier_rows,
+        '头部经销商': top_dealers,
+        '沉睡经销商': sleeping_rows,
+        '问题诊断': problems,
+        '行动建议': suggestions,
+    }
 
 
 def call_ai_analysis(prompt: str) -> str:
     """调用 AI 进行数据分析，未配置 API 时返回空字符串"""
     api_key = os.getenv('AI_API_KEY')
-    base_url = os.getenv('AI_BASE_URL', 'https://api.moonshot.cn/v1')
-    model = os.getenv('AI_MODEL', 'kimi-latest')
+    base_url = os.getenv('AI_BASE_URL', 'https://api.deepseek.com/v1')
+    model = os.getenv('AI_MODEL', 'deepseek-v4-flash')
 
     if not api_key:
         return ''
@@ -296,8 +534,8 @@ def call_ai_analysis(prompt: str) -> str:
         body = json.dumps({
             'model': model,
             'messages': [{'role': 'user', 'content': prompt}],
-            'temperature': 0.5,
-            'max_tokens': 1500,
+            'temperature': 0.3,
+            'max_tokens': 2000,
         }, ensure_ascii=False).encode('utf-8')
         req = urllib.request.Request(
             f'{base_url}/chat/completions',
@@ -315,53 +553,478 @@ def call_ai_analysis(prompt: str) -> str:
         return ''
 
 
-def generate_analysis_text(df) -> str:
-    """生成数据分析文本，优先使用 AI，失败时 fallback 本地"""
+def _safe_json_loads(text):
+    """安全解析 AI 返回的 JSON，尝试去除常见包装"""
+    if not text:
+        return None
+    text = text.strip()
+    if text.startswith('```json'):
+        text = text[7:]
+    if text.startswith('```'):
+        text = text[3:]
+    if text.endswith('```'):
+        text = text[:-3]
+    text = text.strip()
+    try:
+        return json.loads(text)
+    except Exception:
+        return None
+
+
+def generate_analysis_json(df) -> dict:
+    """生成数据分析 JSON，优先使用 AI，失败时 fallback 本地"""
     analysis_data = _generate_analysis_data(df)
     prompt = _build_analysis_prompt(analysis_data)
     ai_text = call_ai_analysis(prompt)
-    if ai_text:
-        return ai_text
-    return _local_analysis_text(analysis_data)
+    ai_json = _safe_json_loads(ai_text)
+    if ai_json and isinstance(ai_json, dict) and '核心结论' in ai_json:
+        return ai_json
+    return _local_analysis_json(analysis_data)
 
 
-def write_analysis_sheet(wb, analysis_text: str):
-    """写入数据分析 sheet"""
+def _set_cell_style(cell, font, fill=None, align=None, border=True):
+    cell.font = font
+    if fill:
+        cell.fill = fill
+    if align:
+        cell.alignment = align
+    if border:
+        cell.border = THIN_BORDER
+
+
+def _write_section_title(ws, row, text, col_start=1, col_end=8):
+    """写入蓝色章节标题行，A 列显示标题，同行其他列留空但统一样式"""
+    section_fill = fill(COLOR_HEADER_BG)
+    for c in range(col_start, col_end + 1):
+        cell = ws.cell(row=row, column=c, value=text if c == col_start else '')
+        cell.font = FONT_HEADER
+        cell.fill = section_fill
+        cell.alignment = Alignment(horizontal='left', vertical='center')
+        cell.border = THIN_BORDER
+    ws.row_dimensions[row].height = 28
+
+
+def _write_content_row(ws, row, label, value, label_col=1, label_end=2, value_col=3, value_end=8):
+    """写入标签+内容行"""
+    ws.merge_cells(start_row=row, start_column=label_col, end_row=row, end_column=label_end)
+    label_cell = ws.cell(row=row, column=label_col, value=label)
+    label_cell.font = Font(name='微软雅黑', size=11, bold=True)
+    label_cell.alignment = Alignment(horizontal='left', vertical='center')
+    label_cell.border = THIN_BORDER
+    label_cell.fill = fill(COLOR_ZEBRA)
+
+    ws.merge_cells(start_row=row, start_column=value_col, end_row=row, end_column=value_end)
+    value_cell = ws.cell(row=row, column=value_col, value=value)
+    value_cell.font = FONT_DATA
+    value_cell.alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
+    value_cell.border = THIN_BORDER
+    ws.row_dimensions[row].height = 24
+
+
+def _write_ai_tip(ws, row, text, max_col=8):
+    """在分析表格下方写入 AI 建议提示行"""
+    tip_fill = fill('E7F3FF')
+    for c in range(1, max_col + 1):
+        cell = ws.cell(row=row, column=c)
+        cell.fill = tip_fill
+        cell.border = THIN_BORDER
+    cell = ws.cell(row=row, column=1, value=f'AI 建议：{text}')
+    cell.font = Font(name='微软雅黑', size=10, italic=True, color='1F4E78')
+    cell.alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
+    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=max_col)
+    ws.row_dimensions[row].height = 36
+
+
+def write_analysis_sheet(wb, analysis_json: dict):
+    """按固定表样式写入数据分析 sheet，所有区块均占满 A-H 列"""
     ws = wb.create_sheet(title='数据分析')
-    ws.column_dimensions['A'].width = 100
+    max_col = 8
 
-    # 标题
-    title_cell = ws['A1']
-    title_cell.value = '经销商数据分析报告'
-    title_cell.font = Font(name='黑体', size=16, bold=True, color='FFFFFF')
-    title_cell.fill = PatternFill('solid', fgColor='1F4E78')
-    title_cell.alignment = Alignment(horizontal='left', vertical='center')
-    ws.row_dimensions[1].height = 35
+    # 列宽
+    widths = {'A': 10, 'B': 16, 'C': 16, 'D': 14, 'E': 14, 'F': 14, 'G': 14, 'H': 14}
+    for col, width in widths.items():
+        ws.column_dimensions[col].width = width
 
-    # 内容
-    lines = analysis_text.split('\n')
-    for idx, line in enumerate(lines, 2):
-        cell = ws.cell(row=idx, column=1, value=line)
-        cell.font = Font(name='微软雅黑', size=11)
-        cell.alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
-        ws.row_dimensions[idx].height = 22
+    def style_range(row, col_start, col_end, font, fill_color, align, border=True):
+        for c in range(col_start, col_end + 1):
+            cell = ws.cell(row=row, column=c)
+            cell.font = font
+            cell.fill = fill_color
+            cell.alignment = align
+            if border:
+                cell.border = THIN_BORDER
 
-    # 边框
-    for row in range(1, len(lines) + 2):
-        ws.cell(row=row, column=1).border = THIN_BORDER
+    # 第1行：大标题（不合并，避免部分列格式丢失；A1 写标题，其余列写空值但同样式）
+    for c in range(1, max_col + 1):
+        cell = ws.cell(row=1, column=c, value='经销商数据分析报告' if c == 1 else '')
+        cell.font = FONT_TITLE
+        cell.fill = fill(COLOR_TITLE_BG)
+        cell.alignment = CENTER_ALIGN
+        cell.border = THIN_BORDER
+    ws.row_dimensions[1].height = 45
+
+    current_row = 3
+
+    # 核心结论
+    _write_section_title(ws, current_row, '一、核心结论')
+    current_row += 1
+    style_range(current_row, 1, max_col, FONT_DATA, fill(COLOR_WHITE),
+                Alignment(horizontal='left', vertical='top', wrap_text=True))
+    ws.cell(row=current_row, column=1, value=analysis_json.get('核心结论', ''))
+    ws.merge_cells(start_row=current_row, start_column=1, end_row=current_row, end_column=max_col)
+    ws.row_dimensions[current_row].height = 80
+    current_row += 2
+
+    # 关键指标（2行2列卡片，占满 A-H）
+    _write_section_title(ws, current_row, '二、关键指标')
+    current_row += 1
+    indicators = analysis_json.get('关键指标', {})
+    items = [
+        ('提审/创建', indicators.get('提审/创建', '')),
+        ('提审/渲染', indicators.get('提审/渲染', '')),
+        ('最佳大区', indicators.get('最佳大区', '')),
+        ('最差大区', indicators.get('最差大区', '')),
+    ]
+    headers = [('指标', 2), ('数值', 2), ('指标', 2), ('数值', 2)]
+    col_idx = 1
+    for header, span in headers:
+        ws.merge_cells(start_row=current_row, start_column=col_idx, end_row=current_row, end_column=col_idx + span - 1)
+        cell = ws.cell(row=current_row, column=col_idx, value=header)
+        cell.font = FONT_HEADER
+        cell.fill = fill(COLOR_HEADER_BG)
+        cell.alignment = CENTER_ALIGN
+        cell.border = THIN_BORDER
+        col_idx += span
+    ws.row_dimensions[current_row].height = 25
+    current_row += 1
+    for i in range(0, len(items), 2):
+        row_items = items[i:i + 2]
+        while len(row_items) < 2:
+            row_items.append(('', ''))
+        col_idx = 1
+        for label, value in row_items:
+            ws.merge_cells(start_row=current_row, start_column=col_idx, end_row=current_row, end_column=col_idx + 1)
+            label_cell = ws.cell(row=current_row, column=col_idx, value=label)
+            label_cell.font = Font(name='微软雅黑', size=10, bold=True)
+            label_cell.fill = fill(COLOR_ZEBRA)
+            label_cell.alignment = CENTER_ALIGN
+            label_cell.border = THIN_BORDER
+            ws.merge_cells(start_row=current_row, start_column=col_idx + 2, end_row=current_row, end_column=col_idx + 3)
+            value_cell = ws.cell(row=current_row, column=col_idx + 2, value=value)
+            value_cell.font = FONT_DATA
+            value_cell.fill = fill(COLOR_WHITE)
+            value_cell.alignment = CENTER_ALIGN
+            value_cell.border = THIN_BORDER
+            col_idx += 4
+        ws.row_dimensions[current_row].height = 28
+        current_row += 1
+    current_row += 1
+
+    # 漏斗分析
+    _write_section_title(ws, current_row, '三、漏斗分析')
+    current_row += 1
+    funnel = analysis_json.get('漏斗分析', {})
+    funnel_items = [
+        ('创建方案数', funnel.get('创建方案数', '')),
+        ('渲染方案数', funnel.get('渲染方案数', '')),
+        ('提审方案数', funnel.get('提审方案数', '')),
+        ('渲染率', funnel.get('渲染率', '')),
+        ('提审率', funnel.get('提审率', '')),
+        ('渲染到提审', funnel.get('渲染到提审', '')),
+    ]
+    headers = [('指标', 2), ('数值', 2), ('指标', 2), ('数值', 2)]
+    col_idx = 1
+    for header, span in headers:
+        ws.merge_cells(start_row=current_row, start_column=col_idx, end_row=current_row, end_column=col_idx + span - 1)
+        cell = ws.cell(row=current_row, column=col_idx, value=header)
+        cell.font = FONT_HEADER
+        cell.fill = fill(COLOR_HEADER_BG)
+        cell.alignment = CENTER_ALIGN
+        cell.border = THIN_BORDER
+        col_idx += span
+    ws.row_dimensions[current_row].height = 25
+    current_row += 1
+    for i in range(0, len(funnel_items), 2):
+        row_items = funnel_items[i:i + 2]
+        while len(row_items) < 2:
+            row_items.append(('', ''))
+        col_idx = 1
+        for label, value in row_items:
+            ws.merge_cells(start_row=current_row, start_column=col_idx, end_row=current_row, end_column=col_idx + 1)
+            label_cell = ws.cell(row=current_row, column=col_idx, value=label)
+            label_cell.font = Font(name='微软雅黑', size=10, bold=True)
+            label_cell.fill = fill(COLOR_ZEBRA)
+            label_cell.alignment = CENTER_ALIGN
+            label_cell.border = THIN_BORDER
+            ws.merge_cells(start_row=current_row, start_column=col_idx + 2, end_row=current_row, end_column=col_idx + 3)
+            value_cell = ws.cell(row=current_row, column=col_idx + 2, value=value)
+            value_cell.font = FONT_DATA
+            value_cell.fill = fill(COLOR_WHITE)
+            value_cell.alignment = CENTER_ALIGN
+            value_cell.border = THIN_BORDER
+            col_idx += 4
+        ws.row_dimensions[current_row].height = 28
+        current_row += 1
+    _write_ai_tip(ws, current_row, funnel.get('ai建议', ''))
+    current_row += 2
+
+    # 大区排名
+    _write_section_title(ws, current_row, '四、大区排名')
+    current_row += 1
+    headers = [('大区', 2), ('提审数', 1), ('转化率', 1), ('评价', 4)]
+    col_idx = 1
+    for header, span in headers:
+        ws.merge_cells(start_row=current_row, start_column=col_idx, end_row=current_row, end_column=col_idx + span - 1)
+        cell = ws.cell(row=current_row, column=col_idx, value=header)
+        cell.font = FONT_HEADER
+        cell.fill = fill(COLOR_HEADER_BG)
+        cell.alignment = CENTER_ALIGN
+        cell.border = THIN_BORDER
+        col_idx += span
+    ws.row_dimensions[current_row].height = 25
+    current_row += 1
+    for item in analysis_json.get('大区排名', []):
+        values = [
+            (item.get('大区', ''), 2),
+            (item.get('提审数', ''), 1),
+            (item.get('转化率', ''), 1),
+            (item.get('评价', ''), 4),
+        ]
+        col_idx = 1
+        for value, span in values:
+            ws.merge_cells(start_row=current_row, start_column=col_idx, end_row=current_row, end_column=col_idx + span - 1)
+            cell = ws.cell(row=current_row, column=col_idx, value=value)
+            cell.font = FONT_DATA
+            cell.fill = fill(COLOR_WHITE)
+            cell.alignment = CENTER_ALIGN
+            cell.border = THIN_BORDER
+            col_idx += span
+        ws.row_dimensions[current_row].height = 24
+        current_row += 1
+    current_row += 1
+
+    # 区域贡献
+    _write_section_title(ws, current_row, '五、区域贡献')
+    current_row += 1
+    headers = [('大区', 2), ('创建占比', 1), ('渲染占比', 1), ('提审占比', 1), ('评级', 1), ('AI 建议', 2)]
+    col_idx = 1
+    for header, span in headers:
+        ws.merge_cells(start_row=current_row, start_column=col_idx, end_row=current_row, end_column=col_idx + span - 1)
+        cell = ws.cell(row=current_row, column=col_idx, value=header)
+        cell.font = FONT_HEADER
+        cell.fill = fill(COLOR_HEADER_BG)
+        cell.alignment = CENTER_ALIGN
+        cell.border = THIN_BORDER
+        col_idx += span
+    ws.row_dimensions[current_row].height = 25
+    current_row += 1
+    for item in analysis_json.get('区域贡献', []):
+        values = [
+            (item.get('大区', ''), 2),
+            (item.get('创建占比', ''), 1),
+            (item.get('渲染占比', ''), 1),
+            (item.get('提审占比', ''), 1),
+            (item.get('贡献评级', ''), 1),
+            (item.get('ai建议', ''), 2),
+        ]
+        col_idx = 1
+        for value, span in values:
+            ws.merge_cells(start_row=current_row, start_column=col_idx, end_row=current_row, end_column=col_idx + span - 1)
+            cell = ws.cell(row=current_row, column=col_idx, value=value)
+            cell.font = FONT_DATA
+            cell.fill = fill(COLOR_WHITE)
+            cell.alignment = Alignment(horizontal='left' if span >= 2 else 'center', vertical='center', wrap_text=True)
+            cell.border = THIN_BORDER
+            col_idx += span
+        ws.row_dimensions[current_row].height = 30
+        current_row += 1
+    current_row += 1
+
+    # 转化分层
+    _write_section_title(ws, current_row, '六、转化分层')
+    current_row += 1
+    headers = [('分层', 3), ('经销商数', 2), ('占比', 1), ('AI 建议', 2)]
+    col_idx = 1
+    for header, span in headers:
+        ws.merge_cells(start_row=current_row, start_column=col_idx, end_row=current_row, end_column=col_idx + span - 1)
+        cell = ws.cell(row=current_row, column=col_idx, value=header)
+        cell.font = FONT_HEADER
+        cell.fill = fill(COLOR_HEADER_BG)
+        cell.alignment = CENTER_ALIGN
+        cell.border = THIN_BORDER
+        col_idx += span
+    ws.row_dimensions[current_row].height = 25
+    current_row += 1
+    for item in analysis_json.get('转化分层', []):
+        values = [
+            (item.get('分层', ''), 3),
+            (item.get('经销商数', ''), 2),
+            (item.get('占比', ''), 1),
+            (item.get('ai建议', ''), 2),
+        ]
+        col_idx = 1
+        for value, span in values:
+            ws.merge_cells(start_row=current_row, start_column=col_idx, end_row=current_row, end_column=col_idx + span - 1)
+            cell = ws.cell(row=current_row, column=col_idx, value=value)
+            cell.font = FONT_DATA
+            cell.fill = fill(COLOR_WHITE)
+            cell.alignment = Alignment(horizontal='left' if span >= 2 else 'center', vertical='center', wrap_text=True)
+            cell.border = THIN_BORDER
+            col_idx += span
+        ws.row_dimensions[current_row].height = 30
+        current_row += 1
+    current_row += 1
+
+    # 头部经销商
+    _write_section_title(ws, current_row, '七、头部经销商')
+    current_row += 1
+    headers = [('排名', 1), ('经销商', 2), ('提审数', 1), ('亮点', 4)]
+    col_idx = 1
+    for header, span in headers:
+        ws.merge_cells(start_row=current_row, start_column=col_idx, end_row=current_row, end_column=col_idx + span - 1)
+        cell = ws.cell(row=current_row, column=col_idx, value=header)
+        cell.font = FONT_HEADER
+        cell.fill = fill(COLOR_HEADER_BG)
+        cell.alignment = CENTER_ALIGN
+        cell.border = THIN_BORDER
+        col_idx += span
+    ws.row_dimensions[current_row].height = 25
+    current_row += 1
+    for item in analysis_json.get('头部经销商', []):
+        values = [
+            (item.get('排名', ''), 1),
+            (item.get('经销商', ''), 2),
+            (item.get('提审数', ''), 1),
+            (item.get('亮点', ''), 4),
+        ]
+        col_idx = 1
+        for value, span in values:
+            ws.merge_cells(start_row=current_row, start_column=col_idx, end_row=current_row, end_column=col_idx + span - 1)
+            cell = ws.cell(row=current_row, column=col_idx, value=value)
+            cell.font = FONT_DATA
+            cell.fill = fill(COLOR_WHITE)
+            cell.alignment = Alignment(horizontal='left' if span >= 2 else 'center',
+                                       vertical='center', wrap_text=True)
+            cell.border = THIN_BORDER
+            col_idx += span
+        ws.row_dimensions[current_row].height = 24
+        current_row += 1
+    current_row += 1
+
+    # 沉睡经销商
+    _write_section_title(ws, current_row, '八、沉睡经销商（创建≥20 且 提审=0）')
+    current_row += 1
+    headers = [('区域', 1), ('经销商', 2), ('创建', 1), ('渲染', 1), ('提审', 1), ('AI 诊断', 2)]
+    col_idx = 1
+    for header, span in headers:
+        ws.merge_cells(start_row=current_row, start_column=col_idx, end_row=current_row, end_column=col_idx + span - 1)
+        cell = ws.cell(row=current_row, column=col_idx, value=header)
+        cell.font = FONT_HEADER
+        cell.fill = fill(COLOR_HEADER_BG)
+        cell.alignment = CENTER_ALIGN
+        cell.border = THIN_BORDER
+        col_idx += span
+    ws.row_dimensions[current_row].height = 25
+    current_row += 1
+    sleeping = analysis_json.get('沉睡经销商', [])
+    if not sleeping:
+        ws.merge_cells(start_row=current_row, start_column=1, end_row=current_row, end_column=max_col)
+        cell = ws.cell(row=current_row, column=1, value='本月无沉睡经销商，整体转化健康。')
+        cell.font = FONT_DATA
+        cell.fill = fill(COLOR_WHITE)
+        cell.alignment = CENTER_ALIGN
+        cell.border = THIN_BORDER
+        ws.row_dimensions[current_row].height = 28
+        current_row += 1
+    else:
+        for item in sleeping:
+            values = [
+                (item.get('区域', ''), 1),
+                (item.get('经销商', ''), 2),
+                (item.get('创建方案数', ''), 1),
+                (item.get('渲染方案数', ''), 1),
+                (item.get('提审方案数', ''), 1),
+                (item.get('诊断', ''), 2),
+            ]
+            col_idx = 1
+            for value, span in values:
+                ws.merge_cells(start_row=current_row, start_column=col_idx, end_row=current_row, end_column=col_idx + span - 1)
+                cell = ws.cell(row=current_row, column=col_idx, value=value)
+                cell.font = FONT_DATA
+                cell.fill = fill(COLOR_WHITE)
+                cell.alignment = Alignment(horizontal='left' if span >= 2 else 'center', vertical='center', wrap_text=True)
+                cell.border = THIN_BORDER
+                col_idx += span
+            ws.row_dimensions[current_row].height = 30
+            current_row += 1
+    current_row += 1
+
+    # 问题诊断
+    _write_section_title(ws, current_row, '九、问题诊断')
+    current_row += 1
+    headers = [('问题', 1), ('涉及经销商', 2), ('影响', 2), ('建议', 3)]
+    col_idx = 1
+    for header, span in headers:
+        ws.merge_cells(start_row=current_row, start_column=col_idx, end_row=current_row, end_column=col_idx + span - 1)
+        cell = ws.cell(row=current_row, column=col_idx, value=header)
+        cell.font = FONT_HEADER
+        cell.fill = fill(COLOR_HEADER_BG)
+        cell.alignment = CENTER_ALIGN
+        cell.border = THIN_BORDER
+        col_idx += span
+    ws.row_dimensions[current_row].height = 25
+    current_row += 1
+    for item in analysis_json.get('问题诊断', []):
+        values = [
+            (item.get('问题', ''), 1),
+            (item.get('涉及经销商', ''), 2),
+            (item.get('影响', ''), 2),
+            (item.get('建议', ''), 3),
+        ]
+        col_idx = 1
+        for value, span in values:
+            ws.merge_cells(start_row=current_row, start_column=col_idx, end_row=current_row, end_column=col_idx + span - 1)
+            cell = ws.cell(row=current_row, column=col_idx, value=value)
+            cell.font = FONT_DATA
+            cell.fill = fill(COLOR_WHITE)
+            cell.alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
+            cell.border = THIN_BORDER
+            col_idx += span
+        ws.row_dimensions[current_row].height = 45
+        current_row += 1
+    current_row += 1
+
+    # 行动建议
+    _write_section_title(ws, current_row, '十、行动建议')
+    current_row += 1
+    for i, suggestion in enumerate(analysis_json.get('行动建议', []), 1):
+        cell_no = ws.cell(row=current_row, column=1, value=i)
+        cell_no.font = Font(name='微软雅黑', size=10, bold=True, color='FFFFFF')
+        cell_no.fill = fill(COLOR_HEADER_BG)
+        cell_no.alignment = CENTER_ALIGN
+        cell_no.border = THIN_BORDER
+        ws.merge_cells(start_row=current_row, start_column=2, end_row=current_row, end_column=max_col)
+        cell_text = ws.cell(row=current_row, column=2, value=suggestion)
+        cell_text.font = FONT_DATA
+        cell_text.fill = fill(COLOR_WHITE) if i % 2 == 0 else fill(COLOR_ZEBRA)
+        cell_text.alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
+        cell_text.border = THIN_BORDER
+        ws.row_dimensions[current_row].height = 32
+        current_row += 1
 
 
 def _write_header(ws, title, headers, max_col):
-    """写入标题行和表头行"""
-    # 标题行：A1 写标题，其他列写空字符串但统一设置填充/边框，
-    # 不合并单元格，避免 openpyxl 合并后部分列格式丢失
+    """写入标题行和表头行，标题跨列居中合并"""
     title_fill = fill(COLOR_TITLE_BG)
+    # 先为整行设置统一样式，再合并单元格
     for col in range(1, max_col + 1):
-        cell = ws.cell(row=1, column=col, value=title if col == 1 else '')
-        cell.font = FONT_TITLE
-        cell.alignment = CENTER_ALIGN
-        cell.fill = title_fill
-        cell.border = THIN_BORDER
+        c = ws.cell(row=1, column=col, value=title if col == 1 else '')
+        c.font = FONT_TITLE
+        c.alignment = CENTER_ALIGN
+        c.fill = title_fill
+        c.border = THIN_BORDER
+    # 合并第一行所有列并居中显示标题
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=max_col)
     ws.row_dimensions[1].height = 55.0
 
     # 列标题
@@ -641,13 +1304,15 @@ def write_formatted_excel_new(df, output_path, title='经销商数据'):
     # 冻结窗格：冻结前两行
     ws.freeze_panes = 'A3'
 
-    # 生成 AI 数据分析并写入第二张 sheet
+    # 为账号信息明细表头添加筛选
+    ws.auto_filter.ref = f'A2:H{grand_total_row}'
+
+    # 生成数据分析 sheets（使用 dealer-data-analyzer skill 逻辑）
     try:
-        analysis_text = generate_analysis_text(df)
-        write_analysis_sheet(wb, analysis_text)
-        print('数据分析 sheet 已生成')
+        analysis_df = prepare_dealer_df(df)
+        add_analysis_sheets(wb, analysis_df)
     except Exception as e:
-        print(f'数据分析 sheet 生成失败: {e}')
+        print(f'数据分析 sheets 生成失败: {e}')
 
     wb.save(output_path)
     print(f'新版美化报表已生成: {output_path}')

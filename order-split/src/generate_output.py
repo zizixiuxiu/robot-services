@@ -15,7 +15,7 @@ from openpyxl.cell.cell import MergedCell
 IGNORED_EXACT_NAMES = {'竖', '横', '标准雕花'}
 
 # 含以下关键词即过滤。
-IGNORED_KEYWORDS = ['竖枋', '横枋', '上横枋', '下横枋', '芯板', '中横', '格条', '隔条', '门洞', '格栅条', '左右板子', '前后板子', '顶板']
+IGNORED_KEYWORDS = ['竖枋', '横枋', '上横枋', '下横枋', '芯板', '中横', '格条', '隔条', '门洞', '格栅条', '左右板子', '前后板子']
 
 # Xmm加厚规格过滤（如3mm加厚板）
 MM_THICK_PATTERN = re.compile(r'\d+mm.*加厚', re.IGNORECASE)
@@ -107,8 +107,8 @@ def read_input_data(input_path):
             area = get_merged_value(sheet, idx, 2)
             name = get_merged_value(sheet, idx, 3)
 
-            # 跳过空行
-            if _is_empty(order_no) or _is_empty(area) or _is_empty(name):
+            # 跳过空行：订单编号和名称必须存在，区域允许为空
+            if _is_empty(order_no) or _is_empty(name):
                 continue
 
             order_str = str(order_no).strip()
@@ -119,7 +119,7 @@ def read_input_data(input_path):
             data.append({
                 'idx': idx,
                 'order_no': str(order_no).strip(),
-                'area': str(area).strip(),
+                'area': str(area).strip() if not _is_empty(area) else '',
                 'name': str(name).strip(),
                 'length': extract_number(get_merged_value(sheet, idx, 4)),
                 'width': extract_number(get_merged_value(sheet, idx, 5)),
@@ -313,7 +313,8 @@ def build_guiti_rows(order_no, sheet1_rows):
 
     for i, srow in enumerate(sheet1_rows):
         qty = int(srow['qty']) if not _is_empty(srow['qty']) else 1
-        area_key = srow['area'] + '_0'
+        area = str(srow['area']).strip()
+        area_key = f"{area}_0" if area else "0"
         raw_material = srow['material']
         # 柜门材质统一加"实木"前缀（系统识别需要）
         material = raw_material

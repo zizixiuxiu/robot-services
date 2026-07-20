@@ -1,0 +1,368 @@
+{
+  "exclude_dates": [
+    {
+      "person_id": "10136",
+      "date": "2026-06-30",
+      "name": "???",
+      "reason": "Historical June output excludes this day."
+    }
+  ],
+  "half_day_dates": [
+    {
+      "person_id": "10380",
+      "date": "2026-01-20",
+      "name": "冷其华",
+      "reason": "Learned from historical output sample."
+    },
+    {
+      "person_id": "10153",
+      "date": "2026-01-30",
+      "name": "唐光超",
+      "reason": "Learned from historical output sample."
+    },
+    {
+      "person_id": "10091",
+      "date": "2026-01-11",
+      "name": "夏通伦",
+      "reason": "Learned from historical output sample."
+    },
+    {
+      "person_id": "10099",
+      "date": "2026-01-28",
+      "name": "曾庆龙",
+      "reason": "Learned from historical output sample."
+    },
+    {
+      "person_id": "10198",
+      "date": "2026-01-01",
+      "name": "杨换",
+      "reason": "Learned from historical output sample."
+    },
+    {
+      "person_id": "10198",
+      "date": "2026-01-09",
+      "name": "杨换",
+      "reason": "Learned from historical output sample."
+    },
+    {
+      "person_id": "10139",
+      "date": "2026-01-26",
+      "name": "王凯",
+      "reason": "Learned from historical output sample."
+    },
+    {
+      "person_id": "10172",
+      "date": "2026-01-28",
+      "name": "王洪允",
+      "reason": "Learned from historical output sample."
+    },
+    {
+      "person_id": "10230",
+      "date": "2026-01-15",
+      "name": "董泽明",
+      "reason": "Learned from historical output sample."
+    },
+    {
+      "person_id": "10230",
+      "date": "2026-01-27",
+      "name": "董泽明",
+      "reason": "Learned from historical output sample."
+    },
+    {
+      "person_id": "10230",
+      "date": "2026-01-31",
+      "name": "董泽明",
+      "reason": "Learned from historical output sample."
+    },
+    {
+      "person_id": "10380",
+      "date": "2026-02-06",
+      "name": "冷其华",
+      "reason": "Learned from historical output sample."
+    },
+    {
+      "person_id": "10171",
+      "date": "2026-02-03",
+      "name": "张飞武",
+      "reason": "Learned from historical output sample."
+    },
+    {
+      "person_id": "10171",
+      "date": "2026-02-04",
+      "name": "张飞武",
+      "reason": "Learned from historical output sample."
+    },
+    {
+      "person_id": "10188",
+      "date": "2026-02-28",
+      "name": "许诗明",
+      "reason": "Learned from historical output sample."
+    },
+    {
+      "person_id": "10592",
+      "date": "2026-02-01",
+      "name": "赵永恒",
+      "reason": "Learned from historical output sample."
+    },
+    {
+      "person_id": "10624",
+      "date": "2026-03-30",
+      "name": "冯永兰",
+      "reason": "Learned from historical output sample."
+    },
+    {
+      "person_id": "10380",
+      "date": "2026-03-04",
+      "name": "冷其华",
+      "reason": "Learned from historical output sample."
+    },
+    {
+      "person_id": "10380",
+      "date": "2026-03-07",
+      "name": "冷其华",
+      "reason": "Learned from historical output sample."
+    },
+    {
+      "person_id": "10380",
+      "date": "2026-03-20",
+      "name": "冷其华",
+      "reason": "Learned from historical output sample."
+    },
+    {
+      "person_id": "10380",
+      "date": "2026-03-30",
+      "name": "冷其华",
+      "reason": "Learned from historical output sample."
+    },
+    {
+      "person_id": "10636",
+      "date": "2026-03-24",
+      "name": "熊洪",
+      "reason": "Learned from historical output sample."
+    },
+    {
+      "person_id": "10636",
+      "date": "2026-03-28",
+      "name": "熊洪",
+      "reason": "Learned from historical output sample."
+    },
+    {
+      "person_id": "10636",
+      "date": "2026-03-31",
+      "name": "熊洪",
+      "reason": "Learned from historical output sample."
+    },
+    {
+      "person_id": "10619",
+      "date": "2026-03-06",
+      "name": "王凯",
+      "reason": "Learned from historical output sample."
+    },
+    {
+      "person_id": "10112",
+      "date": "2026-03-05",
+      "name": "王成",
+      "reason": "Learned from historical output sample."
+    },
+    {
+      "person_id": "10147",
+      "date": "2026-03-09",
+      "name": "邹明超",
+      "reason": "Learned from historical output sample."
+    },
+    {
+      "person_id": "10105",
+      "date": "2026-03-23",
+      "name": "陈小龙",
+      "reason": "Learned from historical output sample."
+    },
+    {
+      "person_id": "10399",
+      "date": "2026-03-18",
+      "name": "黄常刚",
+      "reason": "Learned from historical output sample."
+    },
+    {
+      "person_id": "10412",
+      "date": "2026-03-30",
+      "name": "黄永顺",
+      "reason": "Learned from historical output sample."
+    },
+    {
+      "person_id": "10623",
+      "date": "2026-04-21",
+      "name": "李春",
+      "reason": "Learned from historical output sample."
+    },
+    {
+      "person_id": "10595",
+      "date": "2026-04-18",
+      "name": "李浪",
+      "reason": "Learned from historical output sample."
+    },
+    {
+      "person_id": "10647",
+      "date": "2026-04-14",
+      "name": "李跃",
+      "reason": "Learned from historical output sample."
+    },
+    {
+      "person_id": "10585",
+      "date": "2026-04-15",
+      "name": "杨乔然",
+      "reason": "Learned from historical output sample."
+    },
+    {
+      "person_id": "10210",
+      "date": "2026-04-26",
+      "name": "江航",
+      "reason": "Learned from historical output sample."
+    },
+    {
+      "person_id": "10122",
+      "date": "2026-04-15",
+      "name": "石代春",
+      "reason": "Learned from historical output sample."
+    },
+    {
+      "person_id": "10121",
+      "date": "2026-04-15",
+      "name": "黄成兰",
+      "reason": "Learned from historical output sample."
+    },
+    {
+      "person_id": "10138",
+      "date": "2026-05-06",
+      "name": "曾庆梅",
+      "reason": "Learned from historical output sample."
+    },
+    {
+      "person_id": "10122",
+      "date": "2026-05-29",
+      "name": "石代春",
+      "reason": "Learned from historical output sample."
+    },
+    {
+      "person_id": "10173",
+      "date": "2026-05-31",
+      "name": "高瞻",
+      "reason": "Learned from historical output sample."
+    },
+    {
+      "person_id": "10121",
+      "date": "2026-05-29",
+      "name": "黄成兰",
+      "reason": "Learned from historical output sample."
+    },
+    {
+      "person_id": "10624",
+      "date": "2026-06-11",
+      "name": "冯永兰",
+      "reason": "Learned from historical output sample."
+    },
+    {
+      "person_id": "10138",
+      "date": "2026-06-08",
+      "name": "曾庆梅",
+      "reason": "Learned from historical output sample."
+    },
+    {
+      "person_id": "10210",
+      "date": "2026-06-20",
+      "name": "江航",
+      "reason": "Learned from historical output sample."
+    }
+  ],
+  "full_day_dates": [
+    {
+      "person_id": "10093",
+      "date": "2026-01-03",
+      "name": "徐中彪",
+      "reason": "Learned from historical output sample."
+    },
+    {
+      "person_id": "10210",
+      "date": "2026-01-08",
+      "name": "江航",
+      "reason": "Learned from historical output sample."
+    },
+    {
+      "person_id": "10210",
+      "date": "2026-01-11",
+      "name": "江航",
+      "reason": "Learned from historical output sample."
+    },
+    {
+      "person_id": "10210",
+      "date": "2026-01-14",
+      "name": "江航",
+      "reason": "Learned from historical output sample."
+    },
+    {
+      "person_id": "10230",
+      "date": "2026-01-08",
+      "name": "董泽明",
+      "reason": "Learned from historical output sample."
+    },
+    {
+      "person_id": "10230",
+      "date": "2026-01-11",
+      "name": "董泽明",
+      "reason": "Learned from historical output sample."
+    },
+    {
+      "person_id": "10088",
+      "date": "2026-04-15",
+      "name": "姚强",
+      "reason": "Learned from historical output sample."
+    },
+    {
+      "person_id": "10605",
+      "date": "2026-04-10",
+      "name": "易科春",
+      "reason": "Learned from historical output sample."
+    },
+    {
+      "person_id": "10138",
+      "date": "2026-04-10",
+      "name": "曾庆梅",
+      "reason": "Learned from historical output sample."
+    },
+    {
+      "person_id": "10155",
+      "date": "2026-04-17",
+      "name": "欧杨燕",
+      "reason": "Learned from historical output sample."
+    },
+    {
+      "person_id": "10140",
+      "date": "2026-04-10",
+      "name": "蒋春香",
+      "reason": "Learned from historical output sample."
+    },
+    {
+      "person_id": "10624",
+      "date": "2026-05-29",
+      "name": "冯永兰",
+      "reason": "Learned from historical output sample."
+    },
+    {
+      "person_id": "10380",
+      "date": "2026-05-31",
+      "name": "冷其华",
+      "reason": "Learned from historical output sample."
+    },
+    {
+      "person_id": "10095",
+      "date": "2026-05-11",
+      "name": "唐富国",
+      "reason": "Learned from historical output sample."
+    },
+    {
+      "person_id": "10210",
+      "date": "2026-05-23",
+      "name": "江航",
+      "reason": "Learned from historical output sample."
+    }
+  ]
+}

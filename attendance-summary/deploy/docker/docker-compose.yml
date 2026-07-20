@@ -1,0 +1,24 @@
+name: attendance-summary
+
+services:
+  attendance-summary:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+    container_name: attendance-summary-8009
+    ports:
+      - "8009:8009"
+    volumes:
+      - ../../src:/app/src:ro
+      - ../../data/output:/app/data/output
+      - ../../logs:/app/logs
+    environment:
+      - PYTHONUNBUFFERED=1
+      - LOG_DIR=/app/logs
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8009/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped

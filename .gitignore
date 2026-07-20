@@ -35,6 +35,7 @@ logs/
 data/
 output/
 output_*/
+golden-results/
 
 # Node.js
 node_modules/

@@ -141,6 +141,22 @@ def extract_jingyin_suffix(tsyao):
     return '静音'
 
 
+SLOT_KEYWORDS = ['采台面开槽', '踩台面开槽', '合页面开槽']
+
+
+def build_slot_suffix(base_text, *source_texts):
+    """Append one slot keyword only when it is not already present in the base text."""
+    base = str(base_text) if base_text else ''
+    if any(keyword in base for keyword in SLOT_KEYWORDS):
+        return ''
+
+    combined = ''.join(str(value) for value in source_texts if value)
+    for keyword in SLOT_KEYWORDS:
+        if keyword in combined:
+            return '/' + keyword
+    return ''
+
+
 def build_col_map(ws):
     """读取第一行header，建立列名到索引的映射"""
     col_map = {}
@@ -229,13 +245,7 @@ def read_and_transform(input_path):
             # 单面时检查单项备注/特殊要求中的开槽信息
             col6_suffix = ""
             if '单面' in col6_base:
-                remark_str = str(单项备注) if 单项备注 else ''
-                special_str = str(特殊要求) if 特殊要求 else ''
-                combined = remark_str + special_str
-                for keyword in ['采台面开槽', '踩台面开槽', '合页面开槽']:
-                    if keyword in combined:
-                        col6_suffix = '/' + keyword
-                        break
+                col6_suffix = build_slot_suffix(col6_base, 单项备注, 特殊要求)
             
             if is_yinxing:
                 工件名称 = '隐形门套'

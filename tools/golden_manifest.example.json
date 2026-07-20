@@ -1,0 +1,45 @@
+{
+  "cases": [
+    {
+      "name": "hardware-summary-sample",
+      "url": "http://127.0.0.1:8001",
+      "input": "D:/samples/hardware-summary/input.xls",
+      "fields": {
+        "order_date": "2026.6.28"
+      }
+    },
+    {
+      "name": "order-split-sample",
+      "url": "http://127.0.0.1:8002",
+      "input": "D:/samples/order-split/input.xls"
+    },
+    {
+      "name": "may-sales-sample",
+      "url": "http://127.0.0.1:8003",
+      "files": [
+        {
+          "path": "D:/samples/may-sales/comprehensive-query.xlsx"
+        },
+        {
+          "path": "D:/samples/may-sales/liansi.xlsx"
+        },
+        {
+          "path": "D:/samples/may-sales/shejiang-orders.xlsx"
+        }
+      ]
+    },
+    {
+      "name": "csv-board-sample",
+      "url": "http://127.0.0.1:8004",
+      "input": "D:/samples/csv-board/input.csv"
+    },
+    {
+      "name": "pvc-classify-sample",
+      "url": "http://127.0.0.1:8005",
+      "input": "D:/samples/pvc-classify/input.xls",
+      "fields": {
+        "dir_name": "sample"
+      }
+    }
+  ]
+}

@@ -15,6 +15,9 @@ import xlrd
 import xlwt
 from xlutils.copy import copy
 
+OVERSIZE_LIMIT = 2418
+
+
 def get_date_code_from_filename(filename):
     base = os.path.basename(filename)
     # Pattern 1: W 在日期前或后
@@ -153,12 +156,160 @@ def load_color_families(json_path=None):
         return families, defaults
     return {}, {}
 
+
+def build_member_to_family(color_families):
+    """Map every normalized color alias to its normalized family key."""
+    member_to_family = {}
+    for family_key, members in color_families.items():
+        norm_family = normalize_color_for_lookup(family_key)
+        if norm_family not in member_to_family:
+            member_to_family[norm_family] = family_key
+        for member in members:
+            norm_member = normalize_color_for_lookup(member)
+            if norm_member not in member_to_family:
+                member_to_family[norm_member] = family_key
+    return member_to_family
+
+
 def sort_key_for_row(row):
     """Sort key: normal production first, then by order ID."""
     production_type = row[14] if len(row) > 14 else ''
     order_id = row[9] if len(row) > 9 else ''
     is_urgent = 1 if '加急' in str(production_type) else 0
     return (is_urgent, str(order_id))
+
+
+def parse_thickness(value, default):
+    try:
+        return int(float(value)) if value not in (None, '') else default
+    except (ValueError, TypeError):
+        return default
+
+
+def non_default_thickness_suffix(value, default):
+    thickness = parse_thickness(value, default)
+    return '' if thickness == default else f'{thickness}厚'
+
+
+def craft_from_color(color):
+    return '多层加密' if '多层加密' in str(color) else ''
+
+
+def extract_material_group(row):
+    """按材质把行归到 多层 / 复合 / 密度板 三类，不再按颜色分。"""
+    color = str(row[7]) if len(row) > 7 else ''
+    craft = str(row[11]) if len(row) > 11 else ''
+    material = str(row[12]) if len(row) > 12 else ''
+
+    if '密度板' in material:
+        return '密度板'
+    if '多层加密' in color or '多层加密' in craft:
+        return '多层'
+    return '复合'
+
+
+def is_oversize_row(row, limit=OVERSIZE_LIMIT):
+    try:
+        return float(row[2]) > limit if len(row) > 2 and row[2] not in (None, '') else False
+    except (ValueError, TypeError):
+        return False
+
+
+def build_oversize_meta(cat_type):
+    if cat_type == 'menkuang':
+        return {
+            'type': 'menkuang',
+            'base_color': '',
+            'craft': '',
+            'thickness': 0,
+            'merge_suffix': f'超{OVERSIZE_LIMIT}',
+            'name': f'门套超{OVERSIZE_LIMIT}',
+            'allow_mixed_thickness': True,
+        }
+    return {
+        'type': 'yakou',
+        'base_color': '',
+        'craft': '',
+        'thickness': 0,
+        'merge_suffix': f'超{OVERSIZE_LIMIT}',
+        'name': f'窗套超{OVERSIZE_LIMIT}',
+        'allow_mixed_thickness': True,
+    }
+
+
+def build_category_meta(cat_type, base_color, thickness, craft='', hidden=False, oversize=False):
+    """Build a single source of truth for category identity.
+
+    Category identity is product type + normalized color + craft + thickness
+    (+ optional oversize flag). The returned name is only the display/output
+    filename stem; all merge logic should prefer the structured fields so
+    thickness cannot be dropped by a filename parsing edge case.
+    """
+    if hidden:
+        hidden_thickness = 18
+        name = f'{base_color}{craft}隐形门套{hidden_thickness}'
+        return {
+            'type': 'menkuang',
+            'base_color': base_color,
+            'craft': craft,
+            'thickness': hidden_thickness,
+            'merge_suffix': '隐形',
+            'name': name,
+        }
+
+    oversize_suffix = f'超{OVERSIZE_LIMIT}' if oversize else ''
+
+    if cat_type == 'menkuang':
+        thickness_int = parse_thickness(thickness, 28)
+        thickness_suffix = non_default_thickness_suffix(thickness_int, 28)
+        name = f'{base_color}{craft}门套{thickness_suffix}{oversize_suffix}'
+    elif cat_type == 'yakou':
+        thickness_int = parse_thickness(thickness, 18)
+        thickness_suffix = non_default_thickness_suffix(thickness_int, 18)
+        name = f'哑口套{base_color}{craft}{thickness_suffix}{oversize_suffix}'
+    elif cat_type == 'huqiang':
+        thickness_int = parse_thickness(thickness, 18)
+        thickness_suffix = f'厚度{thickness_int}'
+        name = f'护墙-{base_color}{thickness_suffix}{oversize_suffix}'
+    else:
+        thickness_int = parse_thickness(thickness, 0)
+        thickness_suffix = non_default_thickness_suffix(thickness_int, 0)
+        name = f'{base_color}{craft}{thickness_suffix}{oversize_suffix}'
+
+    # 非超尺寸行不加入 base_color，保证同一颜色族的不同颜色名仍能被合并；
+    # 超尺寸行使用材质组作为 base_color，确保多层/复合/密度板互不合并。
+    merge_suffix = f'{base_color}{craft}{thickness_suffix}{oversize_suffix}' if oversize else f'{craft}{thickness_suffix}{oversize_suffix}'
+    return {
+        'type': cat_type,
+        'base_color': base_color,
+        'craft': craft,
+        'thickness': thickness_int,
+        'merge_suffix': merge_suffix,
+        'name': name,
+    }
+
+
+def add_category_row(categories, meta, row):
+    cat_name = meta['name']
+    if cat_name not in categories:
+        categories[cat_name] = {'type': meta['type'], 'rows': [], 'meta': meta}
+    categories[cat_name]['rows'].append(row)
+
+
+def meta_from_category(cat_name, info):
+    meta = info.get('meta') if isinstance(info, dict) else None
+    if meta:
+        return meta
+    # Compatibility fallback for older ad-hoc category dictionaries.
+    return {
+        'type': info.get('type', '') if isinstance(info, dict) else '',
+        'base_color': get_base_color_from_cat(cat_name),
+        'craft': '多层加密' if '多层加密' in cat_name else '',
+        'thickness': parse_thickness(re.search(r'(\d+)厚$', cat_name).group(1), 0) if re.search(r'(\d+)厚$', cat_name) else 0,
+        'merge_suffix': get_cat_suffix(cat_name),
+        'name': cat_name,
+    }
+
 
 def classify_menkuang_rows(rows, date_code, output_dir=None, reference_dir=None):
     """Classify 门框 rows into categories.
@@ -171,39 +322,30 @@ def classify_menkuang_rows(rows, date_code, output_dir=None, reference_dir=None)
         item_name = row[0] if len(row) > 0 else ''
         color = row[7] if len(row) > 7 else ''
         thickness = row[5] if len(row) > 5 else 28
-        prefix = row[15] if len(row) > 15 else date_code
         base_color = extract_base_color(color)
-        
+        craft = craft_from_color(color)
+
         if '隐形门套' in str(item_name):
-            # 隐形门套先单独分类，后续在 process_file 中决定是否合并到同颜色哑口套
-            # 保留多层加密等工艺后缀，避免与普通哑口套错误合并
-            suffix = '多层加密' if '多层加密' in str(color) else ''
-            cat_name = f'{base_color}{suffix}隐形门套18'
-            cat_type = 'menkuang'
             # 隐形门套厚度强制为18
             if len(row) > 5:
                 row[5] = 18
+            meta = build_category_meta('menkuang', base_color, 18, craft, hidden=True)
+        elif '门套' in str(item_name) and is_oversize_row(row):
+            # 超过 2418 的不再按颜色分，只按材质（多层/复合/密度板）分
+            material = extract_material_group(row)
+            if material == '多层':
+                craft = ''
+            meta = build_category_meta('menkuang', material, thickness, craft, oversize=True)
+        elif '门套' in str(item_name):
+            meta = build_category_meta('menkuang', base_color, thickness, craft)
         else:
-            if '多层加密' in str(color):
-                cat_name = f'{base_color}多层加密门套'
-                cat_type = 'menkuang'
-            elif thickness == 40:
-                cat_name = f'{base_color}门套40厚'
-                cat_type = 'menkuang'
-            elif thickness == 15:
-                cat_name = f'{base_color}门套15厚'
-                cat_type = 'menkuang'
-            else:
-                cat_name = f'{base_color}门套'
-                cat_type = 'menkuang'
-        
-        if cat_name not in categories:
-            categories[cat_name] = {'type': cat_type, 'rows': []}
-        categories[cat_name]['rows'].append(row)
-    
+            meta = build_category_meta('menkuang', base_color, thickness, craft)
+
+        add_category_row(categories, meta, row)
+
     for cat in categories.values():
         cat['rows'].sort(key=sort_key_for_row)
-    
+
     return categories
 
 def classify_yakou_rows(rows, date_code):
@@ -213,19 +355,20 @@ def classify_yakou_rows(rows, date_code):
         color = row[7] if len(row) > 7 else ''
         thickness = row[5] if len(row) > 5 else 18
         base_color = extract_base_color(color)
-        if '多层加密' in str(color):
-            cat_name = f'哑口套{base_color}多层加密'
-        elif thickness == 15:
-            cat_name = f'哑口套{base_color}15厚'
+        craft = craft_from_color(color)
+        if is_oversize_row(row):
+            # 超过 2418 的不再按颜色分，只按材质（多层/复合/密度板）分
+            material = extract_material_group(row)
+            if material == '多层':
+                craft = ''
+            meta = build_category_meta('yakou', material, thickness, craft, oversize=True)
         else:
-            cat_name = f'哑口套{base_color}'
-        if cat_name not in categories:
-            categories[cat_name] = {'type': 'yakou', 'rows': []}
-        categories[cat_name]['rows'].append(row)
-    
+            meta = build_category_meta('yakou', base_color, thickness, craft)
+        add_category_row(categories, meta, row)
+
     for cat in categories.values():
         cat['rows'].sort(key=sort_key_for_row)
-    
+
     return categories
 
 def read_huqiang_data(xls_path):
@@ -300,12 +443,10 @@ def classify_huqiang_rows(rows):
         except (ValueError, TypeError):
             thickness = 18
         base_color = extract_base_color(color)
-        cat_name = f'护墙-{base_color}厚度{int(thickness)}'
         if not base_color:
             continue
-        if cat_name not in categories:
-            categories[cat_name] = {'type': 'huqiang', 'rows': []}
-        categories[cat_name]['rows'].append(row)
+        meta = build_category_meta('huqiang', base_color, thickness)
+        add_category_row(categories, meta, row)
 
     for cat in categories.values():
         cat['rows'].sort(key=lambda r: (str(r[0])))
@@ -313,34 +454,49 @@ def classify_huqiang_rows(rows):
     return categories
 
 def get_base_color_from_cat(cat_name):
-    m = re.match(r'^(.+?)门套(?:40厚|15厚)?$', cat_name)
+    # Strip the oversize suffix first so the existing regexes still work.
+    name = re.sub(r'超\d+$', '', cat_name)
+    m = re.match(r'^(.+?)门套(?:\d+厚)?$', name)
     if m:
         return m.group(1).replace('多层加密', '')
-    m = re.match(r'^哑口套(.+)$', cat_name)
+    m = re.match(r'^哑口套(.+)$', name)
     if m:
-        return m.group(1).replace('多层加密', '').replace('15厚', '')
-    m = re.match(r'^护墙-(.+)厚度\d+$', cat_name)
-    if m:
-        return m.group(1).replace('多层加密', '')
-    m = re.match(r'^(.+?)隐形门套\d+$', cat_name)
+        return re.sub(r'\d+厚$', '', m.group(1).replace('多层加密', ''))
+    m = re.match(r'^护墙-(.+)厚度\d+$', name)
     if m:
         return m.group(1).replace('多层加密', '')
-    m = re.match(r'^隐形门套(.+)$', cat_name)
+    m = re.match(r'^(.+?)隐形门套\d+$', name)
     if m:
         return m.group(1).replace('多层加密', '')
-    return cat_name.replace('多层加密', '')
+    m = re.match(r'^隐形门套(.+)$', name)
+    if m:
+        return m.group(1).replace('多层加密', '')
+    return name.replace('多层加密', '')
 
 def get_cat_suffix(cat_name):
-    """提取类别名的工艺后缀，用于分组时保持工艺一致。"""
+    """提取类别名的工艺/材质/厚度后缀，用于分组时保持工艺一致。"""
+    suffix_parts = []
     if '隐形门套' in cat_name:
-        return '隐形'
+        suffix_parts.append('隐形')
+        return ''.join(suffix_parts)
+    # 材质组本身作为 suffix 的一部分，避免不同材质被合并
+    if '密度板' in cat_name:
+        suffix_parts.append('密度板')
+    elif '多层' in cat_name:
+        suffix_parts.append('多层')
+    elif '复合' in cat_name:
+        suffix_parts.append('复合')
     if '多层加密' in cat_name:
-        return '多层加密'
+        m = re.search(r'(\d+厚)$', cat_name)
+        suffix_parts.append(f'多层加密{m.group(1)}' if m else '多层加密')
     if '40厚' in cat_name:
-        return '40厚'
+        suffix_parts.append('40厚')
     if '15厚' in cat_name:
-        return '15厚'
-    return ''
+        suffix_parts.append('15厚')
+    m = re.search(r'(超\d+)$', cat_name)
+    if m:
+        suffix_parts.append(m.group(1))
+    return ''.join(suffix_parts)
 
 def apply_color_merge(categories, output_dir, color_families, color_defaults=None, reference_dir=None):
     """Merge categories based on color families.
@@ -368,14 +524,7 @@ def apply_color_merge(categories, output_dir, color_families, color_defaults=Non
                 total += len(info[key])
         return total
     
-    # Build a mapping from each member color to its family key
-    # This handles cases where the same family has multiple keys (e.g., ZKY5023 and YSM8897)
-    member_to_family = {}
-    for family_key, members in color_families.items():
-        for member in members:
-            norm_member = normalize_color_for_lookup(member)
-            if norm_member not in member_to_family:
-                member_to_family[norm_member] = family_key
+    member_to_family = build_member_to_family(color_families)
     
     # Group categories by (color_family, type, suffix)
     # Key: (family_key, cat_type, suffix), Value: list of (cat_name, info)
@@ -385,11 +534,12 @@ def apply_color_merge(categories, output_dir, color_families, color_defaults=Non
         # Skip 隐形门套 - they should not be merged with regular categories
         if '隐形门套' in cat_name:
             continue
-        base_color = get_base_color_from_cat(cat_name)
+        meta = meta_from_category(cat_name, info)
+        base_color = meta['base_color']
         norm_color = normalize_color_for_lookup(base_color)
         if norm_color in member_to_family:
             family_key = member_to_family[norm_color]
-            suffix = get_cat_suffix(cat_name)
+            suffix = meta['merge_suffix']
             group_key = (family_key, info['type'], suffix)
             if group_key not in family_groups:
                 family_groups[group_key] = []
@@ -421,7 +571,13 @@ def apply_color_merge(categories, output_dir, color_families, color_defaults=Non
         if cat_name in merge_map:
             target = merge_map[cat_name]
             if target not in merged:
-                merged[target] = {'type': categories[target]['type'], 'rows_mk': [], 'rows_yk': []}
+                merged[target] = {
+                    'type': categories[target]['type'],
+                    'meta': categories[target].get('meta'),
+                    'rows_mk': [],
+                    'rows_yk': [],
+                    'rows_hq': [],
+                }
             if 'rows_mk' in info:
                 merged[target]['rows_mk'].extend(info['rows_mk'])
             if 'rows_yk' in info:
@@ -461,6 +617,38 @@ def apply_color_merge(categories, output_dir, color_families, color_defaults=Non
             cat['rows_yk'].sort(key=sort_key_for_row)
     
     return merged
+
+
+def find_matching_yakou_for_hidden(yx_meta, all_cats, color_families, member_to_family):
+    """Find an existing yakou category matching a hidden-door-frame family."""
+    base_color = yx_meta['base_color']
+    craft = yx_meta['craft']
+
+    exact_name = build_category_meta('yakou', base_color, 18, craft)['name']
+    if exact_name in all_cats and all_cats[exact_name].get('type') == 'yakou':
+        return exact_name
+
+    yx_family = member_to_family.get(normalize_color_for_lookup(base_color))
+    if not yx_family:
+        return None
+
+    matches = []
+    for cat_name, info in all_cats.items():
+        if info.get('type') != 'yakou':
+            continue
+        meta = meta_from_category(cat_name, info)
+        if meta['craft'] != craft or parse_thickness(meta['thickness'], 18) != 18:
+            continue
+        yakou_family = member_to_family.get(normalize_color_for_lookup(meta['base_color']))
+        if yakou_family == yx_family:
+            row_count = len(info.get('rows_yk', [])) + len(info.get('rows', []))
+            matches.append((row_count, cat_name))
+
+    if not matches:
+        return None
+    matches.sort(key=lambda item: (-item[0], item[1]))
+    return matches[0][1]
+
 
 def transform_row(row, idx, material, is_yinxing=False):
     """Transform original 18-col row to target 10-col format."""
@@ -517,12 +705,31 @@ def to_number(value):
 def format_number(value):
     return int(value) if isinstance(value, float) and value.is_integer() else value
 
+
+def validate_single_thickness_category(cat_name, data_rows, allow_mixed=False):
+    if allow_mixed:
+        return
+    thicknesses = {
+        parse_thickness(row[5], 0)
+        for row in data_rows
+        if len(row) > 5 and row[5] not in (None, '')
+    }
+    thicknesses.discard(0)
+    if len(thicknesses) > 1:
+        ordered = ', '.join(str(v) for v in sorted(thicknesses))
+        raise ValueError(f'分类 {cat_name} 混入多个厚度: {ordered}')
+
+
 def get_template_file(output_dir, cat_type, existing_files, reference_dir=None):
     """Find a suitable template file in output_dir or reference_dir."""
     def find_template(files, directory):
         if cat_type == 'menkuang':
-            candidates = [f for f in files 
+            # 优先找精确以“门套.xls”结尾的模板；找不到则放宽到任意“门套”xls
+            candidates = [f for f in files
                           if f.endswith('门套.xls') and '40厚' not in f and '15厚' not in f and not f.startswith('哑口套') and not f.startswith('护墙')]
+            if not candidates:
+                candidates = [f for f in files
+                              if '门套' in f and f.endswith('.xls') and not f.startswith('哑口套') and not f.startswith('护墙')]
         elif cat_type == 'yakou':
             candidates = [f for f in files if f.startswith('哑口套') and f.endswith('.xls')]
         elif cat_type == 'huqiang':
@@ -844,33 +1051,36 @@ def process_file(input_path, output_dir, reference_dir=None, color_map_path=None
     if hq_rows or hq_skipped:
         print(f"  护墙 rows: {len(hq_rows)}" + (f" (skipped {hq_skipped})" if hq_skipped else ""))
     hq_cats = classify_huqiang_rows(hq_rows)
+    color_families, color_defaults = load_color_families(color_map_path)
+    member_to_family = build_member_to_family(color_families)
     
     all_cats = {}
     for name, info in mk_cats.items():
-        all_cats[name] = {'type': info['type'], 'rows_mk': info['rows'], 'rows_yk': [], 'rows_hq': []}
+        all_cats[name] = {'type': info['type'], 'meta': info.get('meta'), 'rows_mk': info['rows'], 'rows_yk': [], 'rows_hq': []}
     for name, info in yk_cats.items():
         if name in all_cats:
             all_cats[name]['rows_yk'].extend(info['rows'])
+            all_cats[name].setdefault('meta', info.get('meta'))
         else:
-            all_cats[name] = {'type': info['type'], 'rows_mk': [], 'rows_yk': info['rows'], 'rows_hq': []}
+            all_cats[name] = {'type': info['type'], 'meta': info.get('meta'), 'rows_mk': [], 'rows_yk': info['rows'], 'rows_hq': []}
     for name, info in hq_cats.items():
-        all_cats[name] = {'type': info['type'], 'rows_hq': info['rows']}
+        all_cats[name] = {'type': info['type'], 'meta': info.get('meta'), 'rows_hq': info['rows']}
     
     # 合并隐形门套到同颜色哑口套（如果存在），并保留多层加密等工艺后缀
     yinxing_names = [n for n in all_cats.keys() if '隐形门套' in n]
     for yx_name in yinxing_names:
-        base_color = get_base_color_from_cat(yx_name)
-        suffix = '多层加密' if '多层加密' in yx_name else ''
-        yakou_name = f'哑口套{base_color}{suffix}'
+        yx_meta = meta_from_category(yx_name, all_cats[yx_name])
+        base_color = yx_meta['base_color']
+        craft = yx_meta['craft']
+        yakou_name = find_matching_yakou_for_hidden(yx_meta, all_cats, color_families, member_to_family)
         if yakou_name in all_cats:
             # 合并到哑口套分类
             if 'rows_mk' not in all_cats[yakou_name]:
                 all_cats[yakou_name]['rows_mk'] = []
             all_cats[yakou_name]['rows_mk'].extend(all_cats[yx_name].get('rows_mk', []))
             del all_cats[yx_name]
-            print(f"  Merged 隐形门套{base_color}{suffix} -> {yakou_name}")
+            print(f"  Merged 隐形门套{base_color}{craft} -> {yakou_name}")
     
-    color_families, color_defaults = load_color_families(color_map_path)
     if color_families:
         print(f"  Loaded color families: {len(color_families)} colors")
         os.makedirs(output_dir, exist_ok=True)
@@ -904,35 +1114,31 @@ def process_file(input_path, output_dir, reference_dir=None, color_map_path=None
         else:
             combined_rows = cat_info.get('rows_yk', []) + cat_info.get('rows_mk', [])
             data_rows = [transform_row(r, i+1, material) for i, r in enumerate(combined_rows)]
+        meta = meta_from_category(cat_name, cat_info)
+        validate_single_thickness_category(cat_name, data_rows, meta.get('allow_mixed_thickness', False))
         
         template_path = get_template_file(output_dir, cat_type, existing_files, reference_dir)
         
         # If no template found and color defaults are available, try to find a family member's template
         if not template_path and color_defaults:
-            base_color = get_base_color_from_cat(cat_name)
+            base_color = meta['base_color']
             norm_color = normalize_color_for_lookup(base_color)
             if norm_color in color_defaults:
                 # Find all related colors and their templates
                 for related_color in color_families.get(norm_color, set()):
-                    # Build potential category names for this related color
+                    related_names = []
                     if cat_type == 'menkuang':
-                        if '40厚' in cat_name:
-                            related_names = [f'{related_color}门套40厚']
-                        elif '15厚' in cat_name:
-                            related_names = [f'{related_color}门套15厚']
-                        else:
-                            related_names = [f'{related_color}门套', f'{related_color}隐形门套18']
+                        related_names.append(build_category_meta('menkuang', related_color, meta['thickness'], meta['craft'])['name'])
+                        if meta['thickness'] != 28:
+                            related_names.append(build_category_meta('menkuang', related_color, 28, meta['craft'])['name'])
+                        if not meta['craft'] and meta['thickness'] == 28:
+                            related_names.append(build_category_meta('menkuang', related_color, 18, '', hidden=True)['name'])
                     elif cat_type == 'yakou':
-                        if '15厚' in cat_name:
-                            related_names = [f'哑口套{related_color}15厚']
-                        else:
-                            related_names = [f'哑口套{related_color}']
+                        related_names.append(build_category_meta('yakou', related_color, meta['thickness'], meta['craft'])['name'])
+                        if meta['thickness'] != 18:
+                            related_names.append(build_category_meta('yakou', related_color, 18, meta['craft'])['name'])
                     elif cat_type == 'huqiang':
-                        m = re.search(r'厚度(\d+)', cat_name)
-                        thick = m.group(1) if m else '18'
-                        related_names = [f'护墙-{related_color}厚度{thick}']
-                    else:
-                        related_names = []
+                        related_names.append(build_category_meta('huqiang', related_color, meta['thickness'])['name'])
                     
                     for related_name in related_names:
                         # Check output_dir first

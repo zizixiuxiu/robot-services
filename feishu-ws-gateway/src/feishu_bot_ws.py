@@ -3,12 +3,13 @@
 独立飞书 Bot 网关 — WebSocket 模式（基于 lark_oapi.ws.Client）
 
 绕过 Gateway LLM，直接通过 lark_oapi 的 websocket 客户端接收飞书消息，
-文件消息路由到本地 HTTP 服务（8001-8008）处理。
+文件消息路由到本地 HTTP 服务（8001-8009）处理。
 
 群路由配置（chat_id → 服务端口）：
   oc_f74b3f332d275f70ba22b4332b5b442d → 8002 (order-split)
   oc_52ccbd9aa43c7abcfe9a8039c638e934 → 8001 (hardware-summary)
   oc_09e8345ee873ce43f52ca182770b56a5 → 测试群（同时支持两种，通过文件名判断）
+  oc_8b2a06d65c0b22fcdb24965898d86290 → 8009 (员工月度考勤)
   FEISHU_QUOTE_CHAT_ID                  → 8007 (quote-maker，可选环境变量)
   FEISHU_DEALER_REPORT_CHAT_ID          → 8008 (dealer-report，可选环境变量)
 
@@ -93,6 +94,8 @@ CHAT_ROUTES = {
     "oc_c0986e7cea619374cfce226cbb199cc4": {"port": 8006, "name": "下车间单转换"},
     # 酷家乐月度经销商数据群：固定绑定 8008，不需要根据文件名路由
     "oc_ccb759f87c198521c575984b3f316cb8": {"port": 8008, "name": "酷家乐月度经销商数据"},
+    # 员工月度考勤群
+    "oc_8b2a06d65c0b22fcdb24965898d86290": {"port": 8009, "name": "员工月度考勤"},
 }
 
 for _chat_id in [x.strip() for x in os.getenv("FEISHU_QUOTE_CHAT_ID", "").split(",") if x.strip()]:
@@ -112,10 +115,10 @@ _dealer_sales_queues = {}        # chat_id -> [file_info, ...]
 _dealer_sales_timers = {}        # chat_id -> Timer (普通窗口)
 _dealer_sales_final_timers = {}  # chat_id -> Timer (最终等待窗口)
 
-# 经销商数据报表（8008）批量收集窗口
-_DEALER_REPORT_WINDOW = 5  # 秒
+# 经销商数据报表（8008）：账号指标作为主文件决定月份范围，设计师数据覆盖完整后自动处理
 _dealer_report_queues = {}   # chat_id -> [file_info, ...]
 _dealer_report_timers = {}   # chat_id -> Timer
+_dealer_report_locks = {}    # chat_id -> threading.Lock
 
 # 批量收集配置
 BATCH_COLLECTION_WINDOW = 10  # 秒
@@ -312,6 +315,7 @@ def _service_name_for_port(port: int, fallback: str = "单文件处理") -> str:
         8006: "下车间单转换",
         8007: "报价单生成",
         8008: "酷家乐月度经销商数据",
+        8009: "员工月度考勤",
     }.get(port, fallback)
 
 
@@ -323,6 +327,37 @@ def _detect_dealer_report_type(file_name: str) -> str:
     if "设计师数据统计" in name or "设计师" in name:
         return "designer"
     return "unknown"
+
+
+def _extract_dealer_report_months(file_name: str) -> set[int]:
+    """从文件名中提取月份集合，例如 1-6月、1-3月、6月。"""
+    name = file_name.lower()
+    months = set()
+    for start, end in re.findall(r"(?<!\d)(1[0-2]|0?[1-9])\s*[-~至到]\s*(1[0-2]|0?[1-9])\s*月", name):
+        start_m = int(start)
+        end_m = int(end)
+        if start_m <= end_m:
+            months.update(range(start_m, end_m + 1))
+        else:
+            months.update(range(start_m, 13))
+            months.update(range(1, end_m + 1))
+
+    range_spans = list(re.finditer(r"(?<!\d)(1[0-2]|0?[1-9])\s*[-~至到]\s*(1[0-2]|0?[1-9])\s*月", name))
+    masked = name
+    for span in reversed(range_spans):
+        masked = masked[:span.start()] + " " * (span.end() - span.start()) + masked[span.end():]
+    for month in re.findall(r"(?<!\d)(1[0-2]|0?[1-9])\s*月", masked):
+        months.add(int(month))
+    return months
+
+
+def _format_months(months: set[int]) -> str:
+    if not months:
+        return "未知月份"
+    ordered = sorted(months)
+    if ordered == list(range(ordered[0], ordered[-1] + 1)):
+        return f"{ordered[0]}月" if len(ordered) == 1 else f"{ordered[0]}-{ordered[-1]}月"
+    return "、".join(f"{m}月" for m in ordered)
 
 
 # ---------------------------------------------------------------------------
@@ -371,19 +406,19 @@ def _call_batch_service(port: int, files: list, order_date: str = None) -> dict:
         return json.loads(resp.read().decode("utf-8"))
 
 
-def _call_dealer_report_service(account_path: str, designer_path: str, account_name: str, designer_name: str) -> dict:
-    """调用经销商数据报表服务（端口 8008），上传账号指标和设计师数据统计两个文件"""
+def _call_dealer_report_service(files: list, title: str = None, output_filename: str = None) -> dict:
+    """调用经销商数据报表服务（端口 8008），上传账号指标和设计师数据统计文件。"""
     url = f"http://{HTTP_SERVICE_HOST}:8008/process"
-    with open(account_path, "rb") as f:
-        account_b64 = base64.b64encode(f.read()).decode("utf-8")
-    with open(designer_path, "rb") as f:
-        designer_b64 = base64.b64encode(f.read()).decode("utf-8")
-    payload = {
-        "files": [
-            {"file_content": account_b64, "filename": account_name},
-            {"file_content": designer_b64, "filename": designer_name},
-        ]
-    }
+    payload_files = []
+    for f in files:
+        with open(f["file_path"], "rb") as fh:
+            b64 = base64.b64encode(fh.read()).decode("utf-8")
+        payload_files.append({"file_content": b64, "filename": f["file_name"]})
+    payload = {"files": payload_files}
+    if title:
+        payload["title"] = title
+    if output_filename:
+        payload["output_filename"] = output_filename
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     req = urllib_request.Request(url, data=body, headers={
         "Content-Type": "application/json; charset=utf-8",
@@ -771,50 +806,68 @@ def _handle_dealer_file(chat_id: str, message_id: str, file_key: str, file_name:
     _send_text(chat_id, f"\u2705 已收到第 {queue_len} 个文件「{file_name}」，{_DEALER_SALES_WINDOW}秒内上传更多文件会一起批量处理；也可以一个个慢慢传，已收到的文件会保留。")
 
 def _process_dealer_report_queue(chat_id: str, service_name: str):
-    """批量处理经销商数据报表队列中的文件对"""
+    """账号指标决定月份范围，设计师统计覆盖完整后生成一份经销商数据报表。"""
     global _dealer_report_queues, _dealer_report_timers
-    queue = _dealer_report_queues.pop(chat_id, [])
     _dealer_report_timers.pop(chat_id, None)
+    queue = _dealer_report_queues.get(chat_id, [])
 
     accounts = [f for f in queue if _detect_dealer_report_type(f["file_name"]) == "account"]
     designers = [f for f in queue if _detect_dealer_report_type(f["file_name"]) == "designer"]
 
-    logger.info("[%s] 经销商数据报表批量处理启动，队列 %d 个，账号指标 %d 个，设计师 %d 个",
+    logger.info("[%s] 经销商数据报表收集检查，队列 %d 个，账号指标 %d 个，设计师 %d 个",
                 chat_id, len(queue), len(accounts), len(designers))
 
-    if not accounts or not designers:
-        _send_text(chat_id, f"\u26a0\ufe0f 需要同时上传账号指标和设计师数据统计文件。当前：账号指标 {len(accounts)} 个，设计师 {len(designers)} 个")
-        for f in queue:
-            try:
-                Path(f["file_path"]).unlink(missing_ok=True)
-            except Exception:
-                pass
+    if not accounts:
+        _send_text(chat_id, "⚠️ 请先上传账号指标主文件，文件名需包含月份范围，例如「1-6月账号指标.xlsx」。")
         return
 
-    pairs = []
-    for i in range(min(len(accounts), len(designers))):
-        pairs.append((accounts[i], designers[i]))
+    account = accounts[-1]
+    target_months = account.get("months") or _extract_dealer_report_months(account["file_name"])
+    if not target_months:
+        _send_text(chat_id, f"⚠️ 无法从账号指标「{account['file_name']}」识别月份范围，请把文件名改成类似「1-6月账号指标.xlsx」后重新上传。")
+        return
 
+    usable_designers = []
+    invalid_designers = []
+    designer_months = set()
+    for designer in designers:
+        months = designer.get("months") or _extract_dealer_report_months(designer["file_name"])
+        if months - target_months:
+            invalid_designers.append(designer)
+            continue
+        usable_designers.append(designer)
+        designer_months.update(months)
+
+    missing_months = target_months - designer_months
+    if missing_months:
+        invalid_text = ""
+        if invalid_designers:
+            invalid_text = "\n以下设计师文件月份超出账号指标范围，暂不参与汇总：" + "、".join(f["file_name"] for f in invalid_designers)
+        _send_text(
+            chat_id,
+            f"✅ 已收到账号指标「{account['file_name']}」，目标范围：{_format_months(target_months)}。\n"
+            f"当前设计师数据已覆盖：{_format_months(designer_months)}；还缺：{_format_months(missing_months)}。{invalid_text}"
+        )
+        return
+
+    process_files = [account] + usable_designers
     sent_count = 0
     errors = []
-    for account, designer in pairs:
-        try:
-            result = _call_dealer_report_service(
-                account["file_path"],
-                designer["file_path"],
-                account["file_name"],
-                designer["file_name"],
-            )
-            logger.info("[%s] 处理结果: %s", chat_id, result.get("success"))
+    try:
+        month_text = _format_months(target_months)
+        result = _call_dealer_report_service(
+            process_files,
+            title=f"{month_text}经销商数据",
+            output_filename=f"{month_text}经销商数据.xlsx",
+        )
+        logger.info("[%s] 处理结果: %s", chat_id, result.get("success"))
 
-            if not result.get("success"):
-                errors.append(f"[{account['file_name']} + {designer['file_name']}] {result.get('error', '\u672a\u77e5\u9519\u8bef')}")
-                continue
-
+        if not result.get("success"):
+            errors.append(result.get("error", "未知错误"))
+        else:
             output_files = result.get("output_files", [])
             if not output_files:
-                errors.append(f"[{account['file_name']} + {designer['file_name']}] \u672a\u751f\u6210\u6587\u4ef6")
-                continue
+                errors.append("未生成文件")
 
             for item in output_files:
                 if isinstance(item, dict):
@@ -843,27 +896,32 @@ def _process_dealer_report_queue(chat_id: str, service_name: str):
                 except Exception as e:
                     logger.error("[%s] 发送文件失败: %s", chat_id, e)
                 time.sleep(0.5)
-        except Exception as e:
-            logger.exception("[%s] 处理文件对异常", chat_id)
-            errors.append(f"[{account['file_name']} + {designer['file_name']}] {str(e)}")
-        finally:
-            for f in (account, designer):
-                try:
-                    Path(f["file_path"]).unlink(missing_ok=True)
-                except Exception:
-                    pass
+    except Exception as e:
+        logger.exception("[%s] 处理经销商数据报表异常", chat_id)
+        errors.append(str(e))
+    finally:
+        _dealer_report_queues.pop(chat_id, None)
+        for f in queue:
+            try:
+                Path(f["file_path"]).unlink(missing_ok=True)
+            except Exception:
+                pass
 
-    msg = f"\u2705 {service_name}处理完成，共 {len(pairs)} 对文件，生成 {sent_count} 个结果文件。"
     if errors:
-        msg += "\n\n\u274c 部分失败：\n" + "\n".join(errors)
-    _send_text(chat_id, msg)
+        _send_text(chat_id, "❌ 酷家乐月度经销商数据处理失败：\n" + "\n".join(errors))
+    else:
+        _send_text(chat_id, f"✅ {service_name}{_format_months(target_months)}处理完成，账号指标 1 个，设计师数据 {len(usable_designers)} 个，生成 {sent_count} 个结果文件。")
 
 
 def _handle_dealer_report_file(chat_id: str, message_id: str, file_key: str, file_name: str, local_path: str, service_name: str):
-    """处理经销商数据报表群文件：5秒窗口内收集账号指标 + 设计师数据统计后批量调用 8008"""
+    """处理经销商数据报表群文件：账号指标决定月份范围，设计师统计覆盖完整后调用 8008。"""
     ftype = _detect_dealer_report_type(file_name)
     if ftype == "unknown":
         _send_text(chat_id, f"\u26a0\ufe0f 无法识别文件「{file_name}」，文件名需包含：账号指标、账号信息、设计师数据统计、设计师")
+        return
+    months = _extract_dealer_report_months(file_name)
+    if not months:
+        _send_text(chat_id, f"⚠️ 无法从文件名「{file_name}」识别月份，请把文件名改成类似「1-6月账号指标.xlsx」或「1-3月设计师数据统计.xlsx」。")
         return
 
     save_dir = Path(tempfile.gettempdir()) / f"dealer_report_pending_{chat_id}"
@@ -871,28 +929,35 @@ def _handle_dealer_report_file(chat_id: str, message_id: str, file_key: str, fil
     save_path = save_dir / file_name
     shutil.copy(local_path, save_path)
 
-    if chat_id not in _dealer_report_queues:
-        _dealer_report_queues[chat_id] = []
+    lock = _dealer_report_locks.setdefault(chat_id, threading.Lock())
+    with lock:
+        if chat_id not in _dealer_report_queues:
+            _dealer_report_queues[chat_id] = []
+        if ftype == "account":
+            old_accounts = [f for f in _dealer_report_queues[chat_id] if _detect_dealer_report_type(f["file_name"]) == "account"]
+            for f in old_accounts:
+                try:
+                    Path(f["file_path"]).unlink(missing_ok=True)
+                except Exception:
+                    pass
+            _dealer_report_queues[chat_id] = [f for f in _dealer_report_queues[chat_id] if _detect_dealer_report_type(f["file_name"]) != "account"]
 
-    _dealer_report_queues[chat_id].append({
-        "file_path": str(save_path),
-        "file_name": file_name,
-        "message_id": message_id,
-        "file_key": file_key,
-        "time": time.time(),
-    })
+        _dealer_report_queues[chat_id].append({
+            "file_path": str(save_path),
+            "file_name": file_name,
+            "message_id": message_id,
+            "file_key": file_key,
+            "file_type": ftype,
+            "months": months,
+            "time": time.time(),
+        })
 
-    if chat_id in _dealer_report_timers and _dealer_report_timers[chat_id] is not None:
-        _dealer_report_timers[chat_id].cancel()
+        if chat_id in _dealer_report_timers and _dealer_report_timers[chat_id] is not None:
+            _dealer_report_timers[chat_id].cancel()
 
-    timer = threading.Timer(_DEALER_REPORT_WINDOW, _process_dealer_report_queue, args=(chat_id, service_name))
-    timer.daemon = True
-    timer.start()
-    _dealer_report_timers[chat_id] = timer
-
-    queue_len = len(_dealer_report_queues[chat_id])
-    logger.info("[%s] 经销商数据报表文件加入队列: %s，当前 %d 个文件", chat_id, file_name, queue_len)
-    _send_text(chat_id, f"\u2705 已收到第 {queue_len} 个文件「{file_name}」，{_DEALER_REPORT_WINDOW}秒内继续上传的文件将一起批量处理。")
+        queue_len = len(_dealer_report_queues[chat_id])
+        logger.info("[%s] 经销商数据报表文件加入队列: %s，当前 %d 个文件", chat_id, file_name, queue_len)
+        _process_dealer_report_queue(chat_id, service_name)
 
 def _process_file(chat_id: str, message_id: str, file_key: str, file_name: str, port: int, service_name: str):
     """后台处理文件"""
