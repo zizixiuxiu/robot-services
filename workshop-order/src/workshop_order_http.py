@@ -68,7 +68,7 @@ def process(input_path: str, output_dir: str, req: dict) -> dict:
         stats = transform(
             converted_path,
             output_path,
-            discount=float(os.getenv("WORKSHOP_DISCOUNT", "0.85")),
+            discount=float(os.getenv("WORKSHOP_DISCOUNT", "0.8")),
             order_type=order_type,
         )
         logger.info("转换完成, cost=%.3fs, stats=%s", time.time() - t0, stats)

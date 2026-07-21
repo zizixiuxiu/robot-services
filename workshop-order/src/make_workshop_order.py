@@ -36,7 +36,7 @@ from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.cell_range import CellRange
 
 
-DEFAULT_DISCOUNT = 0.85
+DEFAULT_DISCOUNT = 0.8
 BUSINESS_SCAN_MAX_COL = 32
 LONG_NOTE_MIN_LENGTH = 30
 DEFAULT_COLUMN_WIDTH = 8.43
@@ -88,6 +88,7 @@ FULL_ORDER_NUMBER_RE = re.compile(r"^[A-Za-z]\d{4}(?:-\d+)+$")
 PAYMENT_AMOUNT_KEYWORDS = (
     "\u5408\u8ba1\u91d1\u989d",
     "85\u6298\u4f18\u60e0",
+    "8\u6298\u4f18\u60e0",
     "\u9700\u652f\u4ed8",
     "\u9700\u4ed8",
     "\u5e94\u652f\u4ed8",

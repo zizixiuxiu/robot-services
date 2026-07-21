@@ -20,7 +20,7 @@ services:
       - PYTHONUNBUFFERED=1
       - LOG_DIR=/app/logs
       - WORKSHOP_MAX_WORKERS=1
-      - WORKSHOP_DISCOUNT=0.85
+      - WORKSHOP_DISCOUNT=0.8
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8006/health')"]
       interval: 30s
