@@ -356,6 +356,9 @@ def classify_menkuang_rows(rows, date_code, output_dir=None, reference_dir=None)
             craft = ''
             meta = build_category_meta('menkuang', material, thickness, craft, oversize=True)
         elif '门套' in str(item_name):
+            material = str(row[12]) if len(row) > 12 else ''
+            if '黑碳晶' in material:
+                craft = '黑碳晶'
             meta = build_category_meta('menkuang', base_color, thickness, craft)
         else:
             meta = build_category_meta('menkuang', base_color, thickness, craft)
@@ -381,6 +384,9 @@ def classify_yakou_rows(rows, date_code):
             craft = ''
             meta = build_category_meta('yakou', material, thickness, craft, oversize=True)
         else:
+            material = str(row[12]) if len(row) > 12 else ''
+            if '黑碳晶' in material:
+                craft = '黑碳晶'
             meta = build_category_meta('yakou', base_color, thickness, craft)
         add_category_row(categories, meta, row)
 
@@ -481,9 +487,16 @@ def get_base_color_from_cat(cat_name):
     m = re.match(r'^窗套超长-(.+)$', name)
     if m:
         return m.group(1)
+    # 非超长黑碳晶：颜色与材质分离
+    m = re.match(r'^(.+?)黑碳晶门套(?:\d+厚)?$', name)
+    if m:
+        return m.group(1)
     m = re.match(r'^(.+?)门套(?:\d+厚)?$', name)
     if m:
         return m.group(1).replace('多层加密', '')
+    m = re.match(r'^哑口套(.+?)黑碳晶(?:\d+厚)?$', name)
+    if m:
+        return m.group(1)
     m = re.match(r'^哑口套(.+)$', name)
     if m:
         return re.sub(r'\d+厚$', '', m.group(1).replace('多层加密', ''))
