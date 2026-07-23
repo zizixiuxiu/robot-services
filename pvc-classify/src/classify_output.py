@@ -15,7 +15,7 @@ import xlrd
 import xlwt
 from xlutils.copy import copy
 
-OVERSIZE_LIMIT = 2418
+OVERSIZE_LIMIT = 2420
 
 
 def get_date_code_from_filename(filename):
@@ -196,11 +196,13 @@ def craft_from_color(color):
 
 
 def extract_material_group(row):
-    """按材质把行归到 多层 / 复合 / 密度板 三类，不再按颜色分。"""
+    """按材质把行归到 多层 / 密度板 / 黑碳晶 / 复合 四类，不再按颜色分。"""
     color = str(row[7]) if len(row) > 7 else ''
     craft = str(row[11]) if len(row) > 11 else ''
     material = str(row[12]) if len(row) > 12 else ''
 
+    if '黑碳晶' in material:
+        return '黑碳晶'
     if '密度板' in material:
         return '密度板'
     if '多层加密' in color or '多层加密' in craft:
@@ -259,26 +261,44 @@ def build_category_meta(cat_type, base_color, thickness, craft='', hidden=False,
 
     oversize_suffix = f'超{OVERSIZE_LIMIT}' if oversize else ''
 
+    if oversize:
+        # 超长门套/窗套统一按材质命名，不再区分颜色/厚度
+        if cat_type == 'menkuang':
+            name = f'门套超长-{base_color}'
+        elif cat_type == 'yakou':
+            name = f'窗套超长-{base_color}'
+        else:
+            name = f'{base_color}{craft}{thickness_suffix}{oversize_suffix}'
+        merge_suffix = f'超长-{base_color}'
+        thickness_int = parse_thickness(thickness, 28 if cat_type == 'menkuang' else 18)
+        return {
+            'type': cat_type,
+            'base_color': base_color,
+            'craft': craft,
+            'thickness': thickness_int,
+            'merge_suffix': merge_suffix,
+            'name': name,
+        }
+
     if cat_type == 'menkuang':
         thickness_int = parse_thickness(thickness, 28)
         thickness_suffix = non_default_thickness_suffix(thickness_int, 28)
-        name = f'{base_color}{craft}门套{thickness_suffix}{oversize_suffix}'
+        name = f'{base_color}{craft}门套{thickness_suffix}'
     elif cat_type == 'yakou':
         thickness_int = parse_thickness(thickness, 18)
         thickness_suffix = non_default_thickness_suffix(thickness_int, 18)
-        name = f'哑口套{base_color}{craft}{thickness_suffix}{oversize_suffix}'
+        name = f'哑口套{base_color}{craft}{thickness_suffix}'
     elif cat_type == 'huqiang':
         thickness_int = parse_thickness(thickness, 18)
         thickness_suffix = f'厚度{thickness_int}'
-        name = f'护墙-{base_color}{thickness_suffix}{oversize_suffix}'
+        name = f'护墙-{base_color}{thickness_suffix}'
     else:
         thickness_int = parse_thickness(thickness, 0)
         thickness_suffix = non_default_thickness_suffix(thickness_int, 0)
-        name = f'{base_color}{craft}{thickness_suffix}{oversize_suffix}'
+        name = f'{base_color}{craft}{thickness_suffix}'
 
-    # 非超尺寸行不加入 base_color，保证同一颜色族的不同颜色名仍能被合并；
-    # 超尺寸行使用材质组作为 base_color，确保多层/复合/密度板互不合并。
-    merge_suffix = f'{base_color}{craft}{thickness_suffix}{oversize_suffix}' if oversize else f'{craft}{thickness_suffix}{oversize_suffix}'
+    # 非超尺寸行不加入 base_color，保证同一颜色族的不同颜色名仍能被合并。
+    merge_suffix = f'{craft}{thickness_suffix}'
     return {
         'type': cat_type,
         'base_color': base_color,
@@ -331,10 +351,9 @@ def classify_menkuang_rows(rows, date_code, output_dir=None, reference_dir=None)
                 row[5] = 18
             meta = build_category_meta('menkuang', base_color, 18, craft, hidden=True)
         elif '门套' in str(item_name) and is_oversize_row(row):
-            # 超过 2418 的不再按颜色分，只按材质（多层/复合/密度板）分
+            # 超过 2420 的不再按颜色分，只按材质（多层/密度板/黑碳晶/复合）分
             material = extract_material_group(row)
-            if material == '多层':
-                craft = ''
+            craft = ''
             meta = build_category_meta('menkuang', material, thickness, craft, oversize=True)
         elif '门套' in str(item_name):
             meta = build_category_meta('menkuang', base_color, thickness, craft)
@@ -357,10 +376,9 @@ def classify_yakou_rows(rows, date_code):
         base_color = extract_base_color(color)
         craft = craft_from_color(color)
         if is_oversize_row(row):
-            # 超过 2418 的不再按颜色分，只按材质（多层/复合/密度板）分
+            # 超过 2420 的不再按颜色分，只按材质（多层/密度板/黑碳晶/复合）分
             material = extract_material_group(row)
-            if material == '多层':
-                craft = ''
+            craft = ''
             meta = build_category_meta('yakou', material, thickness, craft, oversize=True)
         else:
             meta = build_category_meta('yakou', base_color, thickness, craft)
@@ -456,6 +474,13 @@ def classify_huqiang_rows(rows):
 def get_base_color_from_cat(cat_name):
     # Strip the oversize suffix first so the existing regexes still work.
     name = re.sub(r'超\d+$', '', cat_name)
+    # 超长类别直接返回材质名
+    m = re.match(r'^门套超长-(.+)$', name)
+    if m:
+        return m.group(1)
+    m = re.match(r'^窗套超长-(.+)$', name)
+    if m:
+        return m.group(1)
     m = re.match(r'^(.+?)门套(?:\d+厚)?$', name)
     if m:
         return m.group(1).replace('多层加密', '')
@@ -480,7 +505,9 @@ def get_cat_suffix(cat_name):
         suffix_parts.append('隐形')
         return ''.join(suffix_parts)
     # 材质组本身作为 suffix 的一部分，避免不同材质被合并
-    if '密度板' in cat_name:
+    if '黑碳晶' in cat_name:
+        suffix_parts.append('黑碳晶')
+    elif '密度板' in cat_name:
         suffix_parts.append('密度板')
     elif '多层' in cat_name:
         suffix_parts.append('多层')
@@ -720,8 +747,10 @@ def validate_single_thickness_category(cat_name, data_rows, allow_mixed=False):
         raise ValueError(f'分类 {cat_name} 混入多个厚度: {ordered}')
 
 
-def get_template_file(output_dir, cat_type, existing_files, reference_dir=None):
+def get_template_file(output_dir, cat_type, existing_files, reference_dir=None, cat_name=None):
     """Find a suitable template file in output_dir or reference_dir."""
+    is_oversize_cat = cat_name and '超长' in cat_name
+
     def find_template(files, directory):
         if cat_type == 'menkuang':
             # 优先找精确以“门套.xls”结尾的模板；找不到则放宽到任意“门套”xls
@@ -730,8 +759,19 @@ def get_template_file(output_dir, cat_type, existing_files, reference_dir=None):
             if not candidates:
                 candidates = [f for f in files
                               if '门套' in f and f.endswith('.xls') and not f.startswith('哑口套') and not f.startswith('护墙')]
+            # 超长类别优先使用普通门套模板，避免匹配到自身超长文件
+            if is_oversize_cat and candidates:
+                normal_candidates = [f for f in candidates if '超长' not in f]
+                if normal_candidates:
+                    candidates = normal_candidates
         elif cat_type == 'yakou':
             candidates = [f for f in files if f.startswith('哑口套') and f.endswith('.xls')]
+            if not candidates:
+                candidates = [f for f in files if '哑口套' in f and f.endswith('.xls')]
+            if is_oversize_cat and candidates:
+                normal_candidates = [f for f in candidates if '超长' not in f]
+                if normal_candidates:
+                    candidates = normal_candidates
         elif cat_type == 'huqiang':
             candidates = [f for f in files if f.startswith('护墙') and f.endswith('.xls')]
         else:
@@ -1117,7 +1157,7 @@ def process_file(input_path, output_dir, reference_dir=None, color_map_path=None
         meta = meta_from_category(cat_name, cat_info)
         validate_single_thickness_category(cat_name, data_rows, meta.get('allow_mixed_thickness', False))
         
-        template_path = get_template_file(output_dir, cat_type, existing_files, reference_dir)
+        template_path = get_template_file(output_dir, cat_type, existing_files, reference_dir, cat_name)
         
         # If no template found and color defaults are available, try to find a family member's template
         if not template_path and color_defaults:
