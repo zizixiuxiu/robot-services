@@ -195,13 +195,20 @@ def craft_from_color(color):
     return '多层加密' if '多层加密' in str(color) else ''
 
 
+def is_heitanjing(row):
+    """黑碳晶可能写在颜色列或材质列。"""
+    color = str(row[7]) if len(row) > 7 else ''
+    material = str(row[12]) if len(row) > 12 else ''
+    return '黑碳晶' in color or '黑碳晶' in material
+
+
 def extract_material_group(row):
     """按材质把行归到 多层 / 密度板 / 黑碳晶 / 复合 四类，不再按颜色分。"""
     color = str(row[7]) if len(row) > 7 else ''
     craft = str(row[11]) if len(row) > 11 else ''
     material = str(row[12]) if len(row) > 12 else ''
 
-    if '黑碳晶' in material:
+    if is_heitanjing(row):
         return '黑碳晶'
     if '密度板' in material:
         return '密度板'
@@ -356,8 +363,7 @@ def classify_menkuang_rows(rows, date_code, output_dir=None, reference_dir=None)
             craft = ''
             meta = build_category_meta('menkuang', material, thickness, craft, oversize=True)
         elif '门套' in str(item_name):
-            material = str(row[12]) if len(row) > 12 else ''
-            if '黑碳晶' in material:
+            if is_heitanjing(row):
                 craft = '黑碳晶'
             meta = build_category_meta('menkuang', base_color, thickness, craft)
         else:
@@ -384,8 +390,7 @@ def classify_yakou_rows(rows, date_code):
             craft = ''
             meta = build_category_meta('yakou', material, thickness, craft, oversize=True)
         else:
-            material = str(row[12]) if len(row) > 12 else ''
-            if '黑碳晶' in material:
+            if is_heitanjing(row):
                 craft = '黑碳晶'
             meta = build_category_meta('yakou', base_color, thickness, craft)
         add_category_row(categories, meta, row)
