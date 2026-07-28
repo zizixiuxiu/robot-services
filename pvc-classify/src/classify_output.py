@@ -1062,9 +1062,7 @@ def write_to_template(target_path, data_rows, material, template_path=None):
                 row = [i + 1, material, '', '', '', '', '', '', '', '']
             for c_idx, value in enumerate(row):
                 # 序号、生产号、颜色等按字符串写入，防止日期自动转换
-                # 颜色、生产号等列按字符串写入，防止日期自动转换；
-                # 条形码/序号列保留原始数字格式，避免左上角出现文本警告三角。
-                if c_idx in (7, 8):
+                if c_idx in (0, 7, 8):
                     value = str(value)
                 style = clone_cell_style_with_font_size(book, source_sheet, i + 1, c_idx, style_cache, 12)
                 ws.write(i + 1, c_idx, value, style)
