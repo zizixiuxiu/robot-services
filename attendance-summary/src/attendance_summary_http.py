@@ -85,6 +85,10 @@ def _detect_workshop_month(path_or_name: str) -> Optional[str]:
     m = re.search(r"(\d{1,2})月", name)
     if m:
         return f"{datetime.now().year:04d}-{int(m.group(1)):02d}"
+    # 兜底：识别 "5.1-5.31..." 这类日期区间开头的文件名，月份取第一个数字
+    m = re.match(r"(\d{1,2})\.\d{1,2}\s*[-–~]", name)
+    if m:
+        return f"{datetime.now().year:04d}-{int(m.group(1)):02d}"
     return None
 
 
@@ -100,14 +104,20 @@ def _generate_auto(input_path: Path, output_dir: Path) -> Tuple[str, list]:
     """Generate by detected input content: workshop xlsx-like logs or office xls logs."""
     output_dir.mkdir(parents=True, exist_ok=True)
     if _detect_workshop_input(input_path):
+        month = _detect_workshop_month(str(input_path))
         out_file = output_dir / _workshop_output_name(str(input_path))
-        transform_attendance(
+        report = transform_attendance(
             input_file=input_path,
             template_file=WORKSHOP_TEMPLATE,
             output_file=out_file,
-            month=_detect_workshop_month(str(input_path)),
+            month=month,
             config_file=WORKSHOP_CONFIG if WORKSHOP_CONFIG.exists() else None,
         )
+        if not month:
+            # 文件名识别不到月份时，用打卡数据推断出的月份命名
+            named_file = output_dir / f"{report.month}月奢匠车间考勤.xlsx"
+            out_file.replace(named_file)
+            out_file = named_file
         return "workshop", [str(out_file)]
     paths = generate(str(input_path), str(output_dir))
     return "office", paths

@@ -6,6 +6,7 @@ import copy
 import json
 import re
 import shutil
+import sys
 from collections import defaultdict
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, time
@@ -56,8 +57,6 @@ MANUAL_HEADERS = {
     "\u5907\u6ce8",
 }
 
-DEFAULT_AFTERNOON_START = time(12, 0)
-DEFAULT_EARLY_LEAVE_CUTOFF = time(15, 30, 5)
 
 
 @dataclass
@@ -130,6 +129,35 @@ def parse_datetime(value: Any) -> datetime:
         except ValueError:
             pass
     raise ValueError(f"Unsupported datetime value: {value!r}")
+
+
+def combine_date_time(date_value: Any, time_value: Any) -> datetime:
+    """把拆开的 日期列 + 时间列 合并成完整 datetime。"""
+    if isinstance(date_value, datetime):
+        d = date_value.date()
+    elif isinstance(date_value, date):
+        d = date_value
+    else:
+        text = str(date_value).strip()
+        for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%Y-%m-%d %H:%M:%S", "%Y/%m/%d %H:%M:%S"):
+            try:
+                d = datetime.strptime(text, fmt).date()
+                break
+            except ValueError:
+                pass
+        else:
+            raise ValueError(f"Unsupported date value: {date_value!r}")
+    if isinstance(time_value, datetime):
+        t = time_value.time()
+    elif isinstance(time_value, time):
+        t = time_value
+    else:
+        parts = str(time_value).strip().split(":")
+        try:
+            t = time(int(parts[0]), int(parts[1]), int(parts[2]) if len(parts) > 2 else 0)
+        except (ValueError, IndexError):
+            raise ValueError(f"Unsupported time value: {time_value!r}")
+    return datetime.combine(d, t)
 
 
 def read_headers(ws) -> dict[str, int]:
@@ -320,6 +348,72 @@ def extract_roster(wb) -> list[RosterEntry]:
     return entries
 
 
+def scan_input_people(input_file: Path) -> dict[str, dict[str, int]]:
+    """
+    扫描原始输入，按人员ID统计各姓名拼写出现次数。
+    姓名取出现次数最多的拼写（同 ID 多名字时打印 warning）。
+    """
+    wb = openpyxl.load_workbook(input_file, data_only=True, read_only=True)
+    ws = None
+    headers: dict[str, int] = {}
+    for candidate in wb.worksheets:
+        header_row = next(candidate.iter_rows(min_row=1, max_row=1, values_only=True))
+        candidate_headers = {str(v).strip(): i for i, v in enumerate(header_row) if v is not None}
+        if all(required in candidate_headers for required in (H_PERSON_ID, H_NAME)):
+            ws = candidate
+            headers = candidate_headers
+            break
+    if ws is None:
+        wb.close()
+        return {}
+
+    people: dict[str, dict[str, int]] = {}
+    for row in ws.iter_rows(min_row=2, values_only=True):
+        person_id = norm_id(row[headers[H_PERSON_ID]])
+        name = norm_name(row[headers[H_NAME]])
+        if not person_id or not name:
+            continue
+        names = people.setdefault(person_id, defaultdict(int))
+        names[name] += 1
+    wb.close()
+    return people
+
+
+def merge_input_roster(roster: list[RosterEntry], people: dict[str, dict[str, int]]) -> list[RosterEntry]:
+    """
+    把原始输入中有、但模板名单没有的人员追加进名单，按人员ID去重。
+    新补人员的一级部门/二级部门/岗位留空（后续由员工自己导入），姓名、人员ID照常。
+    """
+    seen_ids = {e.person_id for e in roster}
+    merged = list(roster)
+    default_location = roster[0].punch_location if roster else None
+    for person_id in sorted(people, key=lambda p: (0, int(p)) if p.isdigit() else (1, p)):
+        if person_id in seen_ids:
+            continue
+        seen_ids.add(person_id)
+        names = people[person_id]
+        name = max(names.items(), key=lambda kv: kv[1])[0]
+        if len(names) > 1:
+            print(
+                f"[workshop] WARNING: 人员ID {person_id} 存在多个姓名拼写 {dict(names)}，采用 {name!r}",
+                file=sys.stderr,
+            )
+        merged.append(RosterEntry(
+            row_no=len(merged) + 2,
+            person_id=person_id,
+            name=name,
+            punch_location=default_location,
+            dept1=None,
+            dept2=None,
+            position=None,
+            start_date=None,
+            id_card=None,
+            manual_values=None,
+        ))
+    merged.sort(key=lambda e: (0, int(e.person_id)) if e.person_id.isdigit() else (1, e.person_id))
+    return merged
+
+
 def read_raw_records(input_file: Path, roster: list[RosterEntry]) -> tuple[dict[tuple[str, date], list[datetime]], int, int, set[str]]:
     wb = openpyxl.load_workbook(input_file, data_only=True, read_only=True)
     ws = None
@@ -335,7 +429,11 @@ def read_raw_records(input_file: Path, roster: list[RosterEntry]) -> tuple[dict[
         raise ValueError(f"Input file is missing required columns: {H_PERSON_ID}, {H_NAME}, {H_TIME}")
 
     by_id = {entry.person_id: entry for entry in roster}
-    by_name = {entry.name: entry for entry in roster}
+    # 姓名兜底仅在姓名唯一时启用，避免重名（同名不同人员ID）匹配错人
+    name_counts = defaultdict(int)
+    for entry in roster:
+        name_counts[entry.name] += 1
+    by_name = {entry.name: entry for entry in roster if name_counts[entry.name] == 1}
     grouped: dict[tuple[str, date], list[datetime]] = defaultdict(list)
     total = 0
     matched = 0
@@ -353,7 +451,11 @@ def read_raw_records(input_file: Path, roster: list[RosterEntry]) -> tuple[dict[
         value = row[headers[H_TIME]]
         if value is None:
             continue
-        dt = parse_datetime(value)
+        # 日期/时间拆成两列的新格式：合并；单列完整 datetime 的旧格式保持兼容
+        if H_DATE in headers and not isinstance(value, datetime):
+            dt = combine_date_time(row[headers[H_DATE]], value)
+        else:
+            dt = parse_datetime(value)
         grouped[(entry.person_id, dt.date())].append(dt)
         matched += 1
 
@@ -405,11 +507,10 @@ def build_daily_stats(
             hours = (last_dt - first_dt).total_seconds() / 3600
             if hours < 0:
                 hours += 24
-            is_half_day = (
-                key in half_day_dates
-                or first_dt.time() >= DEFAULT_AFTERNOON_START
-                or last_dt.time() <= DEFAULT_EARLY_LEAVE_CUTOFF
-            )
+            # 默认按工时：超过 8 小时算 1 天，8 小时以内（含）算 0.5 天；config 手工覆盖优先
+            is_half_day = hours <= 8
+            if key in half_day_dates:
+                is_half_day = True
             if key in full_day_dates:
                 is_half_day = False
             stats.append(
@@ -620,8 +721,13 @@ def transform_attendance(
             raise ValueError(f"Template workbook is missing sheet: {sheet_name}")
 
     roster = extract_roster(wb)
+    # 名单以原始输入为准：先并入输入人员再读原始记录，保证月份从完整打卡数据推断
+    roster = merge_input_roster(roster, scan_input_people(input_file))
     grouped, raw_count, matched_count, unmatched = read_raw_records(input_file, roster)
     year, month_no = infer_year_month(grouped, month)
+    # 模板名单中没有打卡记录的人不出现在输出里
+    present_ids = {person_id for person_id, _ in grouped}
+    roster = [entry for entry in roster if entry.person_id in present_ids]
     excluded, half_day, full_day = _load_date_rules(config_file)
     stats = build_daily_stats(
         grouped,
@@ -655,7 +761,7 @@ def transform_attendance(
         matched_record_count=matched_count,
         daily_stat_count=len(stats),
         unmatched_person_count=len(unmatched),
-        unmatched_people=sorted(unmatched)[:50],
+        unmatched_people=sorted(unmatched),
     )
 
 
