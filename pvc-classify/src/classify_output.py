@@ -795,6 +795,8 @@ def get_template_file(output_dir, cat_type, existing_files, reference_dir=None, 
         else:
             candidates = []
         if candidates:
+            # 优先使用文件名最短的通用模板（如 门套.xls / 哑口套.xls）
+            candidates.sort(key=len)
             return os.path.join(directory, candidates[0])
         return None
     
