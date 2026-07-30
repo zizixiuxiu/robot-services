@@ -1070,7 +1070,7 @@ def write_to_template(target_path, data_rows, material, template_path=None):
                         pass
                 elif c_idx in (7, 8):
                     value = str(value)
-                num_fmt = '0' if c_idx == 0 else None
+                num_fmt = 'General' if c_idx == 0 else None
                 style = clone_cell_style_with_font_size(book, source_sheet, i + 1, c_idx, style_cache, 12, num_fmt)
                 ws.write(i + 1, c_idx, value, style)
 
