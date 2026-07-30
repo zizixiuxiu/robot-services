@@ -810,20 +810,20 @@ def get_template_file(output_dir, cat_type, existing_files, reference_dir=None, 
     
     return None
 
-def clone_cell_style_with_font_size(book, sheet, row_idx, col_idx, cache, font_points=12):
+def clone_cell_style_with_font_size(book, sheet, row_idx, col_idx, cache, font_points=12, num_format_str=None):
     """Clone an existing cell style and force the font size in points."""
     try:
         xf_index = sheet.cell_xf_index(row_idx, col_idx)
     except Exception:
         xf_index = 0
 
-    key = (xf_index, font_points)
+    key = (xf_index, font_points, num_format_str)
     if key in cache:
         return cache[key]
 
     rdxf = book.xf_list[xf_index]
     style = xlwt.XFStyle()
-    style.num_format_str = book.format_map[rdxf.format_key].format_str
+    style.num_format_str = num_format_str if num_format_str else book.format_map[rdxf.format_key].format_str
 
     src_font = book.font_list[rdxf.font_index]
     dst_font = style.font
@@ -1070,7 +1070,8 @@ def write_to_template(target_path, data_rows, material, template_path=None):
                         pass
                 elif c_idx in (7, 8):
                     value = str(value)
-                style = clone_cell_style_with_font_size(book, source_sheet, i + 1, c_idx, style_cache, 12)
+                num_fmt = '0' if c_idx == 0 else None
+                style = clone_cell_style_with_font_size(book, source_sheet, i + 1, c_idx, style_cache, 12, num_fmt)
                 ws.write(i + 1, c_idx, value, style)
 
         configure_excel_open_state(wb, ws, len(data_rows), 10, 4)
