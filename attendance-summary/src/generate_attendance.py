@@ -37,9 +37,13 @@ DIST_DAY_START_COL = 6
 # 原始记录最多 31 天
 MAX_DAYS_IN_MONTH = 31
 
-# 异常判定：上班晚于 08:30 记迟到；下班（当天最后一次刷卡）早于 18:00 记早退（含夜班早上下班的情形）。
+# 异常判定：上班晚于 08:30 记迟到；下班（当天最后一次刷卡）早于阈值记早退（含夜班早上下班）。
+# 夏季（5月1日 ~ 10月7日国庆假期）阈值 18:00；冬季（10月8日国庆回来 ~ 次年4月底）阈值 17:40。
 LATE_THRESHOLD = datetime.time(8, 30)
-EARLY_LEAVE_THRESHOLD = datetime.time(18, 0)
+SUMMER_EARLY_LEAVE_THRESHOLD = datetime.time(18, 0)
+WINTER_EARLY_LEAVE_THRESHOLD = datetime.time(17, 40)
+WINTER_START_MONTH = 10
+WINTER_START_DAY = 8
 FLAG_HEADER_RE = re.compile(r"^\d{1,2}日异常$")
 
 # 每日考勤时间单元格颜色标记
@@ -51,38 +55,40 @@ NO_FILL = PatternFill(fill_type=None)
 
 def _time_cell_fill(all_times: List[datetime.time],
                     position: int,
-                    month: int) -> Optional[PatternFill]:
+                    month: int,
+                    day: int) -> Optional[PatternFill]:
     """
     根据当天全部刷卡时间和当前单元格对应的时间下标，返回单元格填充色。
     position 为 all_times 中的 0-based 下标。
     - 仅 1 次刷卡：绿色
     - 上班时间（第 1 个时间）> 08:30：红色
-    - 下班时间（最后 1 个时间）< 18:00：黄色
+    - 下班时间（最后 1 个时间）< 季节阈值：黄色
     """
     n = len(all_times)
     if n == 1:
         return SINGLE_FILL
     if position == 0 and all_times[0] > LATE_THRESHOLD:
         return LATE_FILL
-    if position == n - 1 and all_times[-1] < EARLY_LEAVE_THRESHOLD:
+    if position == n - 1 and all_times[-1] < _early_leave_threshold(month, day):
         return EARLY_FILL
     return None
 
 
 def _dist_day_cell_fill(all_times: List[datetime.time],
-                        month: int) -> Optional[PatternFill]:
+                        month: int,
+                        day: int) -> Optional[PatternFill]:
     """
     分发表每天一列的单元格颜色。
     - 仅 1 次刷卡：绿色
     - 上班时间 > 08:30：红色（优先）
-    - 下班时间 < 18:00：黄色
+    - 下班时间 < 季节阈值：黄色
     """
     n = len(all_times)
     if n == 1:
         return SINGLE_FILL
     if all_times[0] > LATE_THRESHOLD:
         return LATE_FILL
-    if all_times[-1] < EARLY_LEAVE_THRESHOLD:
+    if all_times[-1] < _early_leave_threshold(month, day):
         return EARLY_FILL
     return None
 
@@ -664,7 +670,7 @@ def build_summary_distribution_sheet(ws, employees: Dict[str, dict],
                 ws.cell(row=current_row, column=cout_col).value = None
                 ws.cell(row=current_row, column=hours_col).value = None
                 ws.cell(row=current_row, column=days_col).value = 0.5
-                fill = _time_cell_fill(all_times, 0, month)
+                fill = _time_cell_fill(all_times, 0, month, day)
                 ws.cell(row=current_row, column=cin_col).fill = fill if fill else NO_FILL
                 ws.cell(row=current_row, column=cout_col).fill = NO_FILL
             elif n_times == 2:
@@ -680,8 +686,8 @@ def build_summary_distribution_sheet(ws, employees: Dict[str, dict],
                 ws.cell(row=current_row, column=days_col).value = _compute_summary_row_days(
                     all_times
                 )
-                fill_in = _time_cell_fill(all_times, 0, month)
-                fill_out = _time_cell_fill(all_times, 1, month)
+                fill_in = _time_cell_fill(all_times, 0, month, day)
+                fill_out = _time_cell_fill(all_times, 1, month, day)
                 ws.cell(row=current_row, column=cin_col).fill = fill_in if fill_in else NO_FILL
                 ws.cell(row=current_row, column=cout_col).fill = fill_out if fill_out else NO_FILL
             else:
@@ -696,8 +702,8 @@ def build_summary_distribution_sheet(ws, employees: Dict[str, dict],
                     f"=MOD({cout_letter}{current_row}-{cin_letter}{current_row},1)*24"
                 )
                 ws.cell(row=current_row, column=days_col).value = 0.5
-                fill_in = _time_cell_fill(all_times, 0, month)
-                fill_out = _time_cell_fill(all_times, 1, month)
+                fill_in = _time_cell_fill(all_times, 0, month, day)
+                fill_out = _time_cell_fill(all_times, 1, month, day)
                 ws.cell(row=current_row, column=cin_col).fill = fill_in if fill_in else NO_FILL
                 ws.cell(row=current_row, column=cout_col).fill = fill_out if fill_out else NO_FILL
 
@@ -731,7 +737,7 @@ def build_summary_distribution_sheet(ws, employees: Dict[str, dict],
                             extra_times[2], template_cin_val
                         )
                         ws.cell(row=current_row, column=hours_col).value = None
-                        fill = _time_cell_fill(extra_times, 2, month)
+                        fill = _time_cell_fill(extra_times, 2, month, day)
                         ws.cell(row=current_row, column=cin_col).fill = fill if fill else NO_FILL
                         ws.cell(row=current_row, column=cout_col).fill = NO_FILL
                     elif len(extra_times) >= 4:
@@ -744,8 +750,8 @@ def build_summary_distribution_sheet(ws, employees: Dict[str, dict],
                         ws.cell(row=current_row, column=hours_col).value = (
                             f"=MOD({cout_letter}{current_row}-{cin_letter}{current_row},1)*24"
                         )
-                        fill_in = _time_cell_fill(extra_times, 2, month)
-                        fill_out = _time_cell_fill(extra_times, 3, month)
+                        fill_in = _time_cell_fill(extra_times, 2, month, day)
+                        fill_out = _time_cell_fill(extra_times, 3, month, day)
                         ws.cell(row=current_row, column=cin_col).fill = fill_in if fill_in else NO_FILL
                         ws.cell(row=current_row, column=cout_col).fill = fill_out if fill_out else NO_FILL
                     ws.cell(row=current_row, column=days_col).value = 0.5
@@ -904,8 +910,8 @@ def update_summary_distribution_sheet(ws, employees: Dict[str, dict],
                     f"=MOD({cout_letter}{main_row}-{cin_letter}{main_row},1)*24"
                 )
                 ws.cell(row=main_row, column=days_col).value = 0.5
-                fill_in = _time_cell_fill(all_times, 0, month)
-                fill_out = _time_cell_fill(all_times, 1, month)
+                fill_in = _time_cell_fill(all_times, 0, month, day)
+                fill_out = _time_cell_fill(all_times, 1, month, day)
                 ws.cell(row=main_row, column=cin_col).fill = fill_in if fill_in else NO_FILL
                 ws.cell(row=main_row, column=cout_col).fill = fill_out if fill_out else NO_FILL
 
@@ -917,7 +923,7 @@ def update_summary_distribution_sheet(ws, employees: Dict[str, dict],
                         )
                         ws.cell(row=extra_row, column=cout_col).value = None
                         ws.cell(row=extra_row, column=hours_col).value = None
-                        fill = _time_cell_fill(all_times, 2, month)
+                        fill = _time_cell_fill(all_times, 2, month, day)
                         ws.cell(row=extra_row, column=cin_col).fill = fill if fill else NO_FILL
                         ws.cell(row=extra_row, column=cout_col).fill = NO_FILL
                     else:
@@ -930,8 +936,8 @@ def update_summary_distribution_sheet(ws, employees: Dict[str, dict],
                         ws.cell(row=extra_row, column=hours_col).value = (
                             f"=MOD({cout_letter}{extra_row}-{cin_letter}{extra_row},1)*24"
                         )
-                        fill_in = _time_cell_fill(all_times, 2, month)
-                        fill_out = _time_cell_fill(all_times, 3, month)
+                        fill_in = _time_cell_fill(all_times, 2, month, day)
+                        fill_out = _time_cell_fill(all_times, 3, month, day)
                         ws.cell(row=extra_row, column=cin_col).fill = fill_in if fill_in else NO_FILL
                         ws.cell(row=extra_row, column=cout_col).fill = fill_out if fill_out else NO_FILL
                     ws.cell(row=extra_row, column=days_col).value = 0.5
@@ -957,8 +963,8 @@ def update_summary_distribution_sheet(ws, employees: Dict[str, dict],
                     [clock_in, clock_out]
                 )
             # 非拆分月份沿用模板天数，不覆盖
-            fill_in = _time_cell_fill(all_times, 0, month)
-            fill_out = _time_cell_fill(all_times, n_times - 1, month)
+            fill_in = _time_cell_fill(all_times, 0, month, day)
+            fill_out = _time_cell_fill(all_times, n_times - 1, month, day)
             ws.cell(row=main_row, column=cin_col).fill = fill_in if fill_in else NO_FILL
             ws.cell(row=main_row, column=cout_col).fill = fill_out if fill_out else NO_FILL
             if extra_row:
@@ -1171,8 +1177,8 @@ def append_summary_distribution_rows(ws, employees: Dict[str, dict],
                 ws.cell(row=next_row, column=days_col).value = _compute_summary_row_days(
                     all_times
                 )
-                fill_in = _time_cell_fill(all_times, 0, month)
-                fill_out = _time_cell_fill(all_times, 1, month)
+                fill_in = _time_cell_fill(all_times, 0, month, day)
+                fill_out = _time_cell_fill(all_times, 1, month, day)
                 ws.cell(row=next_row, column=cin_col).fill = fill_in if fill_in else NO_FILL
                 ws.cell(row=next_row, column=cout_col).fill = fill_out if fill_out else NO_FILL
             elif split_3plus_days and n_times >= 3:
@@ -1187,8 +1193,8 @@ def append_summary_distribution_rows(ws, employees: Dict[str, dict],
                     f"=MOD({cout_letter}{next_row}-{cin_letter}{next_row},1)*24"
                 )
                 ws.cell(row=next_row, column=days_col).value = 0.5
-                fill_in = _time_cell_fill(all_times, 0, month)
-                fill_out = _time_cell_fill(all_times, 1, month)
+                fill_in = _time_cell_fill(all_times, 0, month, day)
+                fill_out = _time_cell_fill(all_times, 1, month, day)
                 ws.cell(row=next_row, column=cin_col).fill = fill_in if fill_in else NO_FILL
                 ws.cell(row=next_row, column=cout_col).fill = fill_out if fill_out else NO_FILL
             else:
@@ -1202,8 +1208,8 @@ def append_summary_distribution_rows(ws, employees: Dict[str, dict],
                     f"=MOD({cout_letter}{next_row}-{cin_letter}{next_row},1)*24"
                 )
                 ws.cell(row=next_row, column=days_col).value = 1.0
-                fill_in = _time_cell_fill(all_times, 0, month)
-                fill_out = _time_cell_fill(all_times, n_times - 1, month)
+                fill_in = _time_cell_fill(all_times, 0, month, day)
+                fill_out = _time_cell_fill(all_times, n_times - 1, month, day)
                 ws.cell(row=next_row, column=cin_col).fill = fill_in if fill_in else NO_FILL
                 ws.cell(row=next_row, column=cout_col).fill = fill_out if fill_out else NO_FILL
 
@@ -1239,7 +1245,7 @@ def append_summary_distribution_rows(ws, employees: Dict[str, dict],
                             )
                             ws.cell(row=next_row, column=cout_col).value = None
                             ws.cell(row=next_row, column=hours_col).value = None
-                            fill = _time_cell_fill(extra_times, 2, month)
+                            fill = _time_cell_fill(extra_times, 2, month, day)
                             ws.cell(row=next_row, column=cin_col).fill = fill if fill else NO_FILL
                             ws.cell(row=next_row, column=cout_col).fill = NO_FILL
                         elif len(extra_times) >= 4:
@@ -1252,8 +1258,8 @@ def append_summary_distribution_rows(ws, employees: Dict[str, dict],
                             ws.cell(row=next_row, column=hours_col).value = (
                                 f"=MOD({cout_letter}{next_row}-{cin_letter}{next_row},1)*24"
                             )
-                            fill_in = _time_cell_fill(extra_times, 2, month)
-                            fill_out = _time_cell_fill(extra_times, 3, month)
+                            fill_in = _time_cell_fill(extra_times, 2, month, day)
+                            fill_out = _time_cell_fill(extra_times, 3, month, day)
                             ws.cell(row=next_row, column=cin_col).fill = fill_in if fill_in else NO_FILL
                             ws.cell(row=next_row, column=cout_col).fill = fill_out if fill_out else NO_FILL
                         ws.cell(row=next_row, column=days_col).value = 0.5
@@ -1309,7 +1315,7 @@ def update_distribution_sheet(ws, employees: Dict[str, dict],
                 new_value = _build_dist_main_cell_value(input_times)
                 if new_value != template_value:
                     ws.cell(row=r, column=col).value = new_value
-                fill = _dist_day_cell_fill(all_times, month)
+                fill = _dist_day_cell_fill(all_times, month, day)
                 ws.cell(row=r, column=col).fill = fill if fill else NO_FILL
             else:
                 if not day_data:
@@ -1361,7 +1367,7 @@ def append_distribution_rows(ws, employees: Dict[str, dict],
             if day_data:
                 all_times = sorted(set(day_data['all_times']))
                 cell.value = _build_dist_main_cell_value(day_data['all_times'])
-                fill = _dist_day_cell_fill(all_times, month)
+                fill = _dist_day_cell_fill(all_times, month, day)
                 cell.fill = fill if fill else NO_FILL
             else:
                 cell.fill = NO_FILL
@@ -1410,7 +1416,17 @@ def _build_dist_extra_cell_value(input_times: List[datetime.time]) -> Optional[s
     return None
 
 
-def _attendance_flag(day_data: Optional[dict], month: int) -> Optional[str]:
+def _early_leave_threshold(month: int, day: int) -> datetime.time:
+    """夏季（5/1 ~ 10/7 国庆假期）18:00；冬季（10/8 国庆回来 ~ 次年 4 月底）17:40。"""
+    is_winter = (
+        month < 5
+        or month > WINTER_START_MONTH
+        or (month == WINTER_START_MONTH and day >= WINTER_START_DAY)
+    )
+    return WINTER_EARLY_LEAVE_THRESHOLD if is_winter else SUMMER_EARLY_LEAVE_THRESHOLD
+
+
+def _attendance_flag(day_data: Optional[dict], month: int, day: int) -> Optional[str]:
     """返回某天迟到/早退异常文本；无异常返回 None。"""
     if not day_data:
         return None
@@ -1426,7 +1442,7 @@ def _attendance_flag(day_data: Optional[dict], month: int) -> Optional[str]:
 
     if clock_in > LATE_THRESHOLD:
         flags.append("迟到")
-    if clock_out < EARLY_LEAVE_THRESHOLD:
+    if clock_out < _early_leave_threshold(month, day):
         flags.append("早退")
 
     if not flags:
@@ -1495,7 +1511,7 @@ def add_attendance_flag_columns(ws, employees: Dict[str, dict], month: int,
             if not is_first_row:
                 cell.value = None
                 continue
-            cell.value = _attendance_flag(emp.get('days', {}).get(day) if emp else None, month)
+            cell.value = _attendance_flag(emp.get('days', {}).get(day) if emp else None, month, day)
 
 
 def apply_attendance_column_widths(ws, days_in_month: int, summary_layout: bool) -> None:
@@ -1572,7 +1588,7 @@ def build_distribution_sheet(ws, employees: Dict[str, dict],
             if day_data:
                 all_times = sorted(set(day_data['all_times']))
                 cell.value = _build_dist_main_cell_value(all_times)
-                fill = _dist_day_cell_fill(all_times, month)
+                fill = _dist_day_cell_fill(all_times, month, day)
                 cell.fill = fill if fill else NO_FILL
             else:
                 cell.fill = NO_FILL
@@ -1678,7 +1694,7 @@ def _build_distribution_workbook(employees: Dict[str, dict], month_label: str,
             if day_data:
                 all_times = sorted(set(day_data['all_times']))
                 cell.value = _build_dist_main_cell_value(day_data['all_times'])
-                fill = _dist_day_cell_fill(all_times, month)
+                fill = _dist_day_cell_fill(all_times, month, day)
                 cell.fill = fill if fill else NO_FILL
             else:
                 cell.fill = NO_FILL
