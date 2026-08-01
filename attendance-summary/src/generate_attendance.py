@@ -37,11 +37,9 @@ DIST_DAY_START_COL = 6
 # 原始记录最多 31 天
 MAX_DAYS_IN_MONTH = 31
 
-# 异常判定：上班晚于 08:30 记迟到；夏季下班早于 18:00、冬季早于 17:40 记早退。
+# 异常判定：上班晚于 08:30 记迟到；下班（当天最后一次刷卡）早于 18:00 记早退（含夜班早上下班的情形）。
 LATE_THRESHOLD = datetime.time(8, 30)
-SUMMER_EARLY_LEAVE_THRESHOLD = datetime.time(18, 0)
-WINTER_EARLY_LEAVE_THRESHOLD = datetime.time(17, 40)
-SUMMER_MONTHS = {5, 6, 7, 8, 9, 10}
+EARLY_LEAVE_THRESHOLD = datetime.time(18, 0)
 FLAG_HEADER_RE = re.compile(r"^\d{1,2}日异常$")
 
 # 每日考勤时间单元格颜色标记
@@ -59,14 +57,14 @@ def _time_cell_fill(all_times: List[datetime.time],
     position 为 all_times 中的 0-based 下标。
     - 仅 1 次刷卡：绿色
     - 上班时间（第 1 个时间）> 08:30：红色
-    - 下班时间（最后 1 个时间）< 季节阈值：黄色
+    - 下班时间（最后 1 个时间）< 18:00：黄色
     """
     n = len(all_times)
     if n == 1:
         return SINGLE_FILL
     if position == 0 and all_times[0] > LATE_THRESHOLD:
         return LATE_FILL
-    if position == n - 1 and all_times[-1] < _early_leave_threshold(month):
+    if position == n - 1 and all_times[-1] < EARLY_LEAVE_THRESHOLD:
         return EARLY_FILL
     return None
 
@@ -77,14 +75,14 @@ def _dist_day_cell_fill(all_times: List[datetime.time],
     分发表每天一列的单元格颜色。
     - 仅 1 次刷卡：绿色
     - 上班时间 > 08:30：红色（优先）
-    - 下班时间 < 季节阈值：黄色
+    - 下班时间 < 18:00：黄色
     """
     n = len(all_times)
     if n == 1:
         return SINGLE_FILL
     if all_times[0] > LATE_THRESHOLD:
         return LATE_FILL
-    if all_times[-1] < _early_leave_threshold(month):
+    if all_times[-1] < EARLY_LEAVE_THRESHOLD:
         return EARLY_FILL
     return None
 
@@ -1412,13 +1410,6 @@ def _build_dist_extra_cell_value(input_times: List[datetime.time]) -> Optional[s
     return None
 
 
-def _early_leave_threshold(month: int) -> datetime.time:
-    """按月份选择夏季/冬季下班早退阈值。"""
-    if month in SUMMER_MONTHS:
-        return SUMMER_EARLY_LEAVE_THRESHOLD
-    return WINTER_EARLY_LEAVE_THRESHOLD
-
-
 def _attendance_flag(day_data: Optional[dict], month: int) -> Optional[str]:
     """返回某天迟到/早退异常文本；无异常返回 None。"""
     if not day_data:
@@ -1435,7 +1426,7 @@ def _attendance_flag(day_data: Optional[dict], month: int) -> Optional[str]:
 
     if clock_in > LATE_THRESHOLD:
         flags.append("迟到")
-    if clock_out < _early_leave_threshold(month):
+    if clock_out < EARLY_LEAVE_THRESHOLD:
         flags.append("早退")
 
     if not flags:
