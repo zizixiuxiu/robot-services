@@ -510,7 +510,10 @@ def parse_input(input_path: str) -> Dict[str, dict]:
         for day, times in combined_days.items():
             if not times:
                 continue
-            times_sorted = _dedup_nearby_punches(times)
+            times_sorted = sorted(set(times))
+            if len(times_sorted) > 2:
+                # 超过 2 次打卡才去重：相邻 <=30 分钟的视为重复打卡（恰好 2 次的短班次保持原样）
+                times_sorted = _dedup_nearby_punches(times_sorted)
             if len(times_sorted) == 1:
                 days[day] = {
                     'clock_in': times_sorted[0],
