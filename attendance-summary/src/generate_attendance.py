@@ -393,6 +393,19 @@ def remove_roster_sheet(wb) -> None:
         wb.remove(wb["花名册"])
 
 
+def _dedup_nearby_punches(times: List[datetime.time], window_minutes: int = 30) -> List[datetime.time]:
+    """相邻两次刷卡间隔不超过 window_minutes 分钟视为重复打卡，只保留最早的一次。"""
+    result: List[datetime.time] = []
+    for t in sorted(set(times)):
+        if result:
+            prev = result[-1]
+            gap = (t.hour * 3600 + t.minute * 60 + t.second) - (prev.hour * 3600 + prev.minute * 60 + prev.second)
+            if gap <= window_minutes * 60:
+                continue
+        result.append(t)
+    return result
+
+
 def parse_time(tstr: str) -> Optional[datetime.time]:
     """把 '08:27' 这类字符串转成 datetime.time"""
     if not tstr:
@@ -497,7 +510,7 @@ def parse_input(input_path: str) -> Dict[str, dict]:
         for day, times in combined_days.items():
             if not times:
                 continue
-            times_sorted = sorted(set(times))
+            times_sorted = _dedup_nearby_punches(times)
             if len(times_sorted) == 1:
                 days[day] = {
                     'clock_in': times_sorted[0],
