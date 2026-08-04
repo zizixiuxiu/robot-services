@@ -357,11 +357,6 @@ def classify_menkuang_rows(rows, date_code, output_dir=None, reference_dir=None)
             if len(row) > 5:
                 row[5] = 18
             meta = build_category_meta('menkuang', base_color, 18, craft, hidden=True)
-        elif '门套' in str(item_name) and is_oversize_row(row):
-            # 超过 2420 的不再按颜色分，只按材质（多层/密度板/黑碳晶/复合）分
-            material = extract_material_group(row)
-            craft = ''
-            meta = build_category_meta('menkuang', material, thickness, craft, oversize=True)
         elif '门套' in str(item_name):
             if is_heitanjing(row):
                 craft = '黑碳晶'
@@ -384,15 +379,9 @@ def classify_yakou_rows(rows, date_code):
         thickness = row[5] if len(row) > 5 else 18
         base_color = extract_base_color(color)
         craft = craft_from_color(color)
-        if is_oversize_row(row):
-            # 超过 2420 的不再按颜色分，只按材质（多层/密度板/黑碳晶/复合）分
-            material = extract_material_group(row)
-            craft = ''
-            meta = build_category_meta('yakou', material, thickness, craft, oversize=True)
-        else:
-            if is_heitanjing(row):
-                craft = '黑碳晶'
-            meta = build_category_meta('yakou', base_color, thickness, craft)
+        if is_heitanjing(row):
+            craft = '黑碳晶'
+        meta = build_category_meta('yakou', base_color, thickness, craft)
         add_category_row(categories, meta, row)
 
     for cat in categories.values():
