@@ -714,9 +714,8 @@ def find_matching_yakou_for_hidden(yx_meta, all_cats, color_families, member_to_
 
 def transform_row(row, idx, material, is_yinxing=False):
     """Transform original 18-col row to target 10-col format."""
-    prefix = row[15] if len(row) > 15 else ''
     color = row[7] if len(row) > 7 else ''
-    full_color = str(prefix) + str(color)
+    full_color = str(color)
     
     gongyi_name = row[6] if len(row) > 6 else ''
     special_req = row[17] if len(row) > 17 else ''
