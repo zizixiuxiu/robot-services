@@ -91,12 +91,14 @@ def filter_skipped_rows(data_rows, skip_set):
     return filtered, skipped_ids
 
 def _split_batch_color(color):
-    """颜色列可能是'批次号/颜色'格式，返回颜色部分。"""
+    """颜色列可能是'批次号/颜色[/订单号]'格式，返回中间的颜色部分。"""
     if not color:
         return ''
     color = str(color).strip()
     if '/' in color:
-        color = color.split('/')[-1].strip()
+        parts = color.split('/')
+        if len(parts) >= 2:
+            return parts[1].strip()
     return color
 
 
