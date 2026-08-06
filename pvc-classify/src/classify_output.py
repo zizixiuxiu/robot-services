@@ -100,9 +100,23 @@ def _split_batch_color(color):
     return color
 
 
+def _strip_color_prefix(color):
+    """去掉颜色列中的批次/造型/平板前缀，返回真正的颜色代码。"""
+    if not color:
+        return ''
+    # 去掉常见工艺前缀
+    for prefix in ['造型', '平板']:
+        if prefix in color:
+            color = color.split(prefix, 1)[-1].strip()
+    # 按空格分割，取最后一段（真正的颜色代码）
+    parts = color.split()
+    return parts[-1].strip() if parts else color
+
+
 def extract_base_color(color):
     """Extract base color name for filename."""
     color = _split_batch_color(color)
+    color = _strip_color_prefix(color)
     if not color:
         return ''
     color = re.sub(r'[（(]\s*(?:多层加密)?\s*[）)]', '', color)
@@ -115,9 +129,6 @@ def extract_base_color(color):
         color = color.replace('多层加密', '')
     if '黑碳晶' in color:
         color = color.replace('黑碳晶', '')
-    m = re.match(r'^([A-Z]+\d+)-([\u4e00-\u9fff]+)$', color)
-    if m:
-        return m.group(1)
     m = re.match(r'^(ZKY)-(\d+)$', color)
     if m:
         return m.group(1) + m.group(2)
@@ -127,7 +138,7 @@ def normalize_color_for_lookup(color):
     """Normalize color for family lookup."""
     if not color:
         return ''
-    c = _split_batch_color(color).upper()
+    c = _strip_color_prefix(_split_batch_color(color)).upper()
     c = re.sub(r'[（(]\s*(?:多层加密)?\s*[）)]', '', c)
     c = c.replace('多层加密', '')
     m = re.match(r'^YSM-?(\d+)-(\d+)$', c)
