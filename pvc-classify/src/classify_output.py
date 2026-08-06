@@ -90,19 +90,31 @@ def filter_skipped_rows(data_rows, skip_set):
             filtered.append(row)
     return filtered, skipped_ids
 
-def extract_base_color(color):
-    """Extract base color name for filename."""
+def _split_batch_color(color):
+    """颜色列可能是'批次号/颜色'格式，返回颜色部分。"""
     if not color:
         return ''
     color = str(color).strip()
+    if '/' in color:
+        color = color.split('/')[-1].strip()
+    return color
+
+
+def extract_base_color(color):
+    """Extract base color name for filename."""
+    color = _split_batch_color(color)
+    if not color:
+        return ''
     color = re.sub(r'[（(]\s*(?:多层加密)?\s*[）)]', '', color)
     # Remove common suffixes that are descriptive but not color identifiers
     for suffix in ['门套门扇']:
         if color.endswith(suffix):
             color = color[:-len(suffix)]
-    # 多层加密 is a material feature, not part of color name
+    # 多层加密 / 黑碳晶 是材质特征，不是颜色名的一部分
     if '多层加密' in color:
         color = color.replace('多层加密', '')
+    if '黑碳晶' in color:
+        color = color.replace('黑碳晶', '')
     m = re.match(r'^([A-Z]+\d+)-([\u4e00-\u9fff]+)$', color)
     if m:
         return m.group(1)
@@ -115,7 +127,8 @@ def normalize_color_for_lookup(color):
     """Normalize color for family lookup."""
     if not color:
         return ''
-    c = re.sub(r'[（(]\s*(?:多层加密)?\s*[）)]', '', str(color).strip()).upper()
+    c = _split_batch_color(color).upper()
+    c = re.sub(r'[（(]\s*(?:多层加密)?\s*[）)]', '', c)
     c = c.replace('多层加密', '')
     m = re.match(r'^YSM-?(\d+)-(\d+)$', c)
     if m:
@@ -192,12 +205,14 @@ def non_default_thickness_suffix(value, default):
 
 
 def craft_from_color(color):
-    return '多层加密' if '多层加密' in str(color) else ''
+    color = _split_batch_color(color)
+    return '多层加密' if '多层加密' in color else ''
 
 
 def is_heitanjing(row):
     """黑碳晶可能写在颜色列或材质列。"""
     color = str(row[7]) if len(row) > 7 else ''
+    color = _split_batch_color(color)
     material = str(row[12]) if len(row) > 12 else ''
     return '黑碳晶' in color or '黑碳晶' in material
 
