@@ -1105,8 +1105,8 @@ def write_to_template(target_path, data_rows, material, template_path=None):
 def process_file(input_path, output_dir, reference_dir=None, color_map_path=None, skip_file=None):
     date_code = get_date_code_from_filename(input_path)
     if not date_code:
-        print(f"Cannot extract date code from {input_path}")
-        return
+        date_code = '汇总'
+        print(f"Cannot extract date code from {input_path}, using default: {date_code}")
     
     print(f"Processing {input_path} -> {output_dir} (date: {date_code})")
     
