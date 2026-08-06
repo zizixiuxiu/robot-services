@@ -143,6 +143,14 @@ def normalize_color_for_lookup(color):
     c = _strip_color_prefix(_split_batch_color(color)).upper()
     c = re.sub(r'[（(]\s*(?:多层加密)?\s*[）)]', '', c)
     c = c.replace('多层加密', '')
+    # 对 PY06-描述 这种格式，只取颜色代码用于族查找
+    m = re.match(r'^([A-Z]+-?\d+(?:-\d+)?)-(.+)$', c)
+    if m and any('\u4e00' <= ch <= '\u9fff' for ch in m.group(2)):
+        c = m.group(1)
+    # 兼容 PY06-描述 中 PY 不带连字符的情况
+    m = re.match(r'^(PY\d+)-(.+)$', c)
+    if m and any('\u4e00' <= ch <= '\u9fff' for ch in m.group(2)):
+        c = m.group(1)
     m = re.match(r'^YSM-?(\d+)-(\d+)$', c)
     if m:
         return f'YSM-{m.group(1)}-{m.group(2)}'
@@ -589,7 +597,7 @@ def apply_color_merge(categories, output_dir, color_families, color_defaults=Non
     member_to_family = build_member_to_family(color_families)
     
     # Group categories by (color_family, type, suffix)
-    # Key: (family_key, cat_type, suffix), Value: list of (cat_name, info)
+    # Key: (family_key, cat_type, suffix), Value: list of (cat_name, info, meta)
     family_groups = {}
     
     for cat_name, info in categories.items():
@@ -605,7 +613,7 @@ def apply_color_merge(categories, output_dir, color_families, color_defaults=Non
             group_key = (family_key, info['type'], suffix)
             if group_key not in family_groups:
                 family_groups[group_key] = []
-            family_groups[group_key].append((cat_name, info))
+            family_groups[group_key].append((cat_name, info, meta))
     
     merge_map = {}
     
@@ -613,17 +621,21 @@ def apply_color_merge(categories, output_dir, color_families, color_defaults=Non
         if len(members) <= 1:
             continue
         
-        # Sort by: has_template (desc), row_count (desc), cat_name (asc for stability)
+        family_key = group_key[0]
+        default_name = color_defaults.get(family_key, '') if color_defaults else ''
+        
+        # Sort by: is_default (desc), has_template (desc), row_count (desc), cat_name (asc)
         def sort_key(item):
-            cat_name, info = item
+            cat_name, info, meta = item
+            is_default = 1 if default_name and meta['base_color'] == default_name else 0
             has_template = 1 if file_exists(cat_name, info['type']) else 0
             row_count = count_rows(info)
-            return (has_template, row_count, cat_name)
+            return (is_default, has_template, row_count, cat_name)
         
         members_sorted = sorted(members, key=sort_key, reverse=True)
         main_cat = members_sorted[0][0]
         
-        for cat_name, info in members:
+        for cat_name, info, meta in members:
             if cat_name != main_cat:
                 merge_map[cat_name] = main_cat
     
