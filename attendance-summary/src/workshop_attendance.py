@@ -15,6 +15,7 @@ from typing import Any, Iterable
 
 import openpyxl
 from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.properties import PageSetupProperties
 
 
 SHEET_RAW = "\u539f\u59cb\u8bb0\u5f55"
@@ -702,6 +703,41 @@ def _load_date_rules(path: Path | None) -> tuple[set[tuple[str, date]], set[tupl
     return excluded, half_day, full_day
 
 
+def _setup_print(ws, title_rows: str = "1:1") -> None:
+    """打印友好：横向、缩放至一页宽、顶端重复表头、页脚页码。"""
+    ws.page_setup.orientation = "landscape"
+    ws.page_setup.fitToWidth = 1
+    ws.page_setup.fitToHeight = 0
+    ws.sheet_properties.pageSetUpPr = PageSetupProperties(fitToPage=True)
+    ws.print_title_rows = title_rows
+    ws.oddFooter.center.text = "第 &P 页 / 共 &N 页"
+
+
+def finalize_workshop_output(wb) -> None:
+    """车间输出展示层优化：冻结、分钟数整数显示、统计按人员分组折叠（默认展开）、打印设置。"""
+    ws_raw = wb["原始记录"]
+    ws_raw.freeze_panes = "A2"
+    _setup_print(ws_raw)
+
+    ws_stat = wb["统计"]
+    ws_stat.freeze_panes = "A2"
+    headers = read_headers(ws_stat)
+    id_col = headers.get(H_PERSON_ID)
+    if id_col:
+        for r in range(2, ws_stat.max_row + 1):
+            if norm_id(ws_stat.cell(r, id_col).value):
+                ws_stat.row_dimensions[r].outline_level = 1
+    _setup_print(ws_stat)
+
+    ws_sum = wb["汇总"]
+    headers = read_headers(ws_sum)
+    minutes_col = headers.get("月合计分钟数")
+    if minutes_col:
+        for r in range(2, ws_sum.max_row + 1):
+            ws_sum.cell(r, minutes_col).number_format = "0"
+    _setup_print(ws_sum)
+
+
 def transform_attendance(
     input_file: Path,
     template_file: Path,
@@ -747,6 +783,8 @@ def transform_attendance(
     wb.calculation.fullCalcOnLoad = True
     wb.calculation.forceFullCalc = True
     wb.calculation.calcMode = "auto"
+
+    finalize_workshop_output(wb)
 
     tmp = output_file.with_suffix(output_file.suffix + ".tmp")
     wb.save(tmp)

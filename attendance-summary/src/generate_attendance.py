@@ -25,6 +25,7 @@ import xlrd
 from openpyxl import load_workbook, Workbook
 from openpyxl.styles import Alignment, Border, Side, Font, PatternFill
 from openpyxl.utils import get_column_letter, column_index_from_string
+from openpyxl.worksheet.properties import PageSetupProperties
 
 
 # 汇总表 部门分发 列结构：每 4 列一组（上班时间、下班时间、小时数公式、天数）
@@ -51,6 +52,10 @@ LATE_FILL = PatternFill(start_color='FF0000', end_color='FF0000', fill_type='sol
 EARLY_FILL = PatternFill(start_color='FFFF00', end_color='FFFF00', fill_type='solid')
 SINGLE_FILL = PatternFill(start_color='00FF00', end_color='00FF00', fill_type='solid')
 NO_FILL = PatternFill(fill_type=None)
+
+# 展示层优化：星期表头、续行锚点底色
+WEEKDAY_CN = "一二三四五六日"
+CONT_ANCHOR_FILL = PatternFill(start_color='D9D9D9', end_color='D9D9D9', fill_type='solid')
 
 
 def _time_cell_fill(all_times: List[datetime.time],
@@ -1399,9 +1404,11 @@ def append_distribution_rows(ws, employees: Dict[str, dict],
             ws.cell(row=next_row, column=5).value = None
             for day in range(1, days_in_month + 1):
                 col = DIST_DAY_START_COL + (day - 1)
+                cell = ws.cell(row=next_row, column=col)
                 day_data = days.get(day)
                 if day_data and len(set(day_data['all_times'])) >= 3:
-                    ws.cell(row=next_row, column=col).value = _build_dist_extra_cell_value(day_data['all_times'])
+                    cell.value = _build_dist_extra_cell_value(day_data['all_times'])
+                cell.fill = NO_FILL  # 不继承样式行的残留填色
             last_data_row = next_row
             next_row += 1
 
@@ -1629,6 +1636,7 @@ def build_distribution_sheet(ws, employees: Dict[str, dict],
                 day_data = days.get(day)
                 if day_data and len(set(day_data['all_times'])) >= 3:
                     cell.value = _build_dist_extra_cell_value(day_data['all_times'])
+                cell.fill = NO_FILL  # 不继承样式行的残留填色
                 cell.font = data_font
                 cell.alignment = data_align
             current_row += 1
@@ -1745,6 +1753,116 @@ def _build_distribution_workbook(employees: Dict[str, dict], month_label: str,
     return wb
 
 
+def _weekday_label(year: int, month: int, day: int) -> str:
+    """日期表头文本：'7/1 三' 带星期。"""
+    wd = datetime.date(year, month, day).weekday()
+    return f"{month}/{day} {WEEKDAY_CN[wd]}"
+
+
+def _setup_print(ws, title_rows: str = '1:1') -> None:
+    """打印友好：横向、缩放至一页宽、顶端重复表头、页脚页码。"""
+    ws.page_setup.orientation = 'landscape'
+    ws.page_setup.fitToWidth = 1
+    ws.page_setup.fitToHeight = 0
+    ws.sheet_properties.pageSetUpPr = PageSetupProperties(fitToPage=True)
+    ws.print_title_rows = title_rows
+    ws.oddFooter.center.text = "第 &P 页 / 共 &N 页"
+
+
+def _add_legend_row(ws, start_col: int, no_data_count: int = 0) -> None:
+    """在表尾空一行后添加颜色图例行（不占用数据区）。"""
+    row = ws.max_row + 2
+    entries = [
+        (LATE_FILL, "红=迟到(上班>8:30)"),
+        (EARLY_FILL, "黄=早退(下班早于 夏18:00/冬17:40)"),
+        (SINGLE_FILL, "绿=单次打卡"),
+    ]
+    col = start_col
+    for fill, text in entries:
+        cell = ws.cell(row=row, column=col)
+        cell.value = text
+        cell.fill = fill
+        col += 1
+    if no_data_count:
+        ws.cell(row=row, column=col).value = f"(本月整月无打卡 {no_data_count} 人，未列入本表)"
+
+
+def _anchor_continuation_rows(ws, data_start_row: int, name_col: int,
+                              day_cols: Sequence[int]) -> int:
+    """3+ 次打卡续行：姓名列标 '〃同上' + 浅灰底，返回锚定行数。"""
+    anchored = 0
+    for r in range(data_start_row, ws.max_row + 1):
+        if ws.cell(row=r, column=name_col).value not in (None, ''):
+            continue
+        has_data = any(ws.cell(row=r, column=c).value not in (None, '') for c in day_cols)
+        if not has_data:
+            continue
+        cell = ws.cell(row=r, column=name_col)
+        cell.value = '〃同上'
+        cell.fill = CONT_ANCHOR_FILL
+        anchored += 1
+    return anchored
+
+
+def finalize_office_summary(wb, year: int, month: int, days_in_month: int,
+                            no_data_count: int) -> None:
+    """汇总文件展示层优化：冻结、日期表头带星期、末列表头、小时/天数列分组折叠、
+    续行锚定、颜色图例、分钟数整数显示、打印设置。"""
+    month_label = get_month_label(month)
+    dist_sheet_name = f"{month_label}部门分发"
+    if dist_sheet_name not in wb.sheetnames:
+        dist_sheet_name = wb.sheetnames[0]
+    ws_dist = wb[dist_sheet_name]
+    # 冻结 5 个身份列 + 表头行
+    ws_dist.freeze_panes = 'F2'
+    day_end_col = SUMMARY_DAY_START_COL + SUMMARY_DAY_COLS_PER_DAY * days_in_month - 1
+    for day in range(1, days_in_month + 1):
+        cin_col, cout_col, hours_col, days_col = _summary_day_cols(day)
+        ws_dist.cell(row=1, column=cin_col).value = f"{_weekday_label(year, month, day)} 首"
+        ws_dist.cell(row=1, column=cout_col).value = "末"
+        # 每天的小时数/天数列分组折叠，默认收起为“每日首末卡”视图；合计列不进组
+        for col in (hours_col, days_col):
+            dim = ws_dist.column_dimensions[get_column_letter(col)]
+            dim.outline_level = 1
+            dim.hidden = True
+        ws_dist.column_dimensions[get_column_letter(days_col + 1)].collapsed = True
+    _anchor_continuation_rows(ws_dist, 2, 2, range(SUMMARY_DAY_START_COL, day_end_col + 1))
+    _add_legend_row(ws_dist, 2, no_data_count)
+    _setup_print(ws_dist)
+
+    ws_sum = wb['汇总']
+    ws_sum.freeze_panes = 'A2'
+    for c in range(1, ws_sum.max_column + 1):
+        if str(ws_sum.cell(row=1, column=c).value or '').strip() == '月合计分钟数':
+            for r in range(2, ws_sum.max_row + 1):
+                ws_sum.cell(row=r, column=c).number_format = '0'
+            break
+    _setup_print(ws_sum)
+    wb.calculation.fullCalcOnLoad = True
+
+
+def finalize_office_distribution(wb, year: int, month: int, days_in_month: int,
+                                 no_data_count: int) -> None:
+    """分发文件展示层优化：冻结、日期表头带星期、续行锚定、颜色图例、打印设置。"""
+    month_label = get_month_label(month)
+    dist_sheet_name = f"{month_label}部门分发"
+    if dist_sheet_name not in wb.sheetnames:
+        dist_sheet_name = wb.sheetnames[0]
+    ws_dist = wb[dist_sheet_name]
+    # 表头在第 2 行（第 1 行为合并标题），数据从第 3 行开始
+    ws_dist.freeze_panes = 'A3'
+    for day in range(1, days_in_month + 1):
+        col = DIST_DAY_START_COL + day - 1
+        ws_dist.cell(row=2, column=col).value = _weekday_label(year, month, day)
+    _anchor_continuation_rows(ws_dist, 3, 2,
+                              range(DIST_DAY_START_COL, DIST_DAY_START_COL + days_in_month))
+    _add_legend_row(ws_dist, 2, no_data_count)
+    _setup_print(ws_dist, title_rows='1:2')
+    if '花名册' in wb.sheetnames:
+        wb['花名册'].freeze_panes = 'A2'
+    wb.calculation.fullCalcOnLoad = True
+
+
 def generate(input_path: str, output_dir: str,
              summary_template_path: Optional[str] = None,
              distribution_template_path: Optional[str] = None,
@@ -1812,6 +1930,7 @@ def generate(input_path: str, output_dir: str,
         is_base = False
 
     employees = parse_input(str(input_path))
+    no_data_count = sum(1 for emp in employees.values() if not emp.get('days'))
     if include_names is not None:
         employees = {
             name: emp for name, emp in employees.items()
@@ -1922,6 +2041,7 @@ def generate(input_path: str, output_dir: str,
             update_summary_formulas(ws_sum, month_label, hours_total_letter, count_total_letter)
     apply_attendance_column_widths(ws_dist, days_in_month, summary_layout=True)
     remove_roster_sheet(wb_summary)
+    finalize_office_summary(wb_summary, year, month, days_in_month, no_data_count)
     _unlink_existing_output(out_summary)
     wb_summary.save(out_summary)
     wb_summary.close()
@@ -1961,7 +2081,10 @@ def generate(input_path: str, output_dir: str,
             append_distribution_rows(ws_dist2, employees, days_in_month,
                                      month=month)
     apply_attendance_column_widths(ws_dist2, days_in_month, summary_layout=False)
-    remove_roster_sheet(wb_distribution)
+    # 分发文件不保留花名册 sheet（模板里 D 列残留的是外部工作簿 VLOOKUP，与内部 sheet 无关）
+    if '花名册' in wb_distribution.sheetnames:
+        wb_distribution.remove(wb_distribution['花名册'])
+    finalize_office_distribution(wb_distribution, year, month, days_in_month, no_data_count)
     _unlink_existing_output(out_distribution)
     wb_distribution.save(out_distribution)
     wb_distribution.close()
