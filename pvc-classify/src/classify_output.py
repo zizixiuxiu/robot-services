@@ -131,6 +131,10 @@ def extract_base_color(color):
         color = color.replace('多层加密', '')
     if '黑碳晶' in color:
         color = color.replace('黑碳晶', '')
+    # 去掉中文描述，只保留颜色代码，如 PY02-半山胡桃 -> PY02
+    m = re.match(r'^([A-Z]+\d+)-([\u4e00-\u9fff]+)$', color)
+    if m:
+        return m.group(1)
     m = re.match(r'^(ZKY)-(\d+)$', color)
     if m:
         return m.group(1) + m.group(2)
