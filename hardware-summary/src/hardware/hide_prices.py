@@ -542,12 +542,36 @@ def find_tuwen_target_row(sheet, source_row):
     return None
 
 
+def _sheet_is_hidden(book, name):
+    """xlrd: visibility 0=可见, 1=隐藏, 2=very hidden。缺属性视为可见。"""
+    try:
+        sheet = book.sheet_by_name(name)
+    except Exception:
+        return True
+    return getattr(sheet, 'visibility', 0) != 0
+
+
+def _is_wu_sheet_name(name):
+    return bool(name) and '五' in name
+
+
 def _get_date_source_sheet_name(book):
-    """获取日期源 sheet 名称，优先级：1五/1五金 > 1"""
-    for name in book.sheet_names():
-        if name in ('1五', '1五金'):
+    """日期公式锚点：第一个可见的五金表（优先 1五/1五金）。
+
+    只看五金表改日期；1五 常被源文件隐藏，不能锚在隐藏表上。
+    没有任何可见五金表时，才退回第一个可见普通表。
+    """
+    names = book.sheet_names()
+    for name in names:
+        if name in ('1五', '1五金') and not _sheet_is_hidden(book, name):
             return name
-    return '1' if '1' in book.sheet_names() else None
+    for name in names:
+        if _is_wu_sheet_name(name) and not _sheet_is_hidden(book, name):
+            return name
+    for name in names:
+        if not _sheet_is_hidden(book, name):
+            return name
+    return '1' if '1' in names else (names[0] if names else None)
 
 
 def _extract_dates_from_source(book):
@@ -672,7 +696,7 @@ def generate_factory_version(source_path, output_path, order_date=None):
     book = xlrd.open_workbook(source_path, formatting_info=True)
     wb = copy(book)
     
-    # 确定日期源 sheet，优先级：1五/1五金 > 1
+    # 确定日期源 sheet：第一个可见五金表
     date_source = _get_date_source_sheet_name(book)
     
     # 从日期源 sheet 扫描日期单元格位置，用于其他 sheet 写公式引用
@@ -762,21 +786,15 @@ def generate_factory_version(source_path, output_path, order_date=None):
                                 refs_dict[ref_key] = Utils.rowcol_to_cell(r, tc)
     
     date_values = {}  # 实际日期值 {ref_key: value}
-    
-    # 1. 优先从五金表扫描日期位置
-    if date_source and date_source != '1':
+
+    if date_source:
         s_src = book.sheet_by_name(date_source)
-        _scan_date_info(s_src, date_refs, date_values, is_wu=True)
-    
-    # 2. 从普通表 1 补充缺失的日期值（但不改变 date_source）
-    if '1' in book.sheet_names():
+        _scan_date_info(s_src, date_refs, date_values, is_wu=_is_wu_sheet_name(date_source))
+
+    # 从普通表 1 补充缺失的日期值（不改变 date_source / date_refs）
+    if '1' in book.sheet_names() and date_source != '1':
         s1 = book.sheet_by_name('1')
         _scan_date_info(s1, {}, date_values, is_wu=False)
-    
-    # 3. 如果根本没有五金表，从普通表 1 扫描位置
-    if date_source == '1' and '1' in book.sheet_names():
-        s_src = book.sheet_by_name('1')
-        _scan_date_info(s_src, date_refs, date_values, is_wu=False)
     
     def _write_formula_if_in_bounds(ws_obj, style_sheet, row_idx, col_idx, formula_text):
         """写公式（带边界保护和原样式保留）"""
@@ -1004,7 +1022,7 @@ def generate_factory_version(source_path, output_path, order_date=None):
                     style = _get_output_style(sheet, row, col, is_wu_sheet)
                     ws.write(row, col, val, style)
         
-        # 1. 替换日期：普通表和五金表按不同字段匹配，找到标签后在右侧写入公式引用 Sheet "1"
+        # 1. 替换日期：普通表和五金表按不同字段匹配，找到标签后在右侧写入公式引用日期源 sheet
         if order_date or date_refs:
             for row in range(sheet.nrows):
                 for col in range(sheet.ncols):

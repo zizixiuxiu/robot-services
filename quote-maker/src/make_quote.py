@@ -267,6 +267,25 @@ def base_order_no(order_no: str) -> str:
     return order_no
 
 
+def _sub_order_sort_key(order_no: str) -> tuple:
+    """子单号排序键：末尾 -N 子单后缀按数字排序（-2 在 -10 前），无子单后缀排最后。"""
+    no = order_no or ""
+    if no and base_order_no(no) != no:
+        match = re.search(r"-(\d+)$", no)
+        if match:
+            return (0, int(match.group(1)))
+    return (1, 0)
+
+
+def _group_sub_order_key(group: tuple) -> tuple:
+    """正单分组排序键：组内有子单号按子单序号排，否则保持原相对顺序排最后。"""
+    for item in group[1]:
+        no = item.order_no or ""
+        if no and base_order_no(no) != no:
+            return _sub_order_sort_key(no)
+    return (1, 0)
+
+
 def order_no_from_filename(input_path: Path) -> str:
     """Extract display order number from filename.
 
@@ -1649,16 +1668,21 @@ def build_workbook_input_only(
         hardware_items = [item for item in source_hardware_items if item.order_no == order_no]
     # In input-only mode, do not drop any area from the source file.
     groups = [(area, group) for area, group in groups]
+    # 正单页按子单号数字序排页：BOM 行序不一定是 -1..-N 顺序（如 6049 行序为
+    # -1,-4,-5,...,-2,-3），排序后 页k 对应第 k 个子单，五金表随之对齐；
+    # 无子单号的分组保持原有相对顺序（sorted 稳定排序）
+    groups = sorted(groups, key=_group_sub_order_key)
     header = dict(source_header) if source_header is not None else read_input_header(input_path)
     # 汇总单号格式：基础单号-子单总数-当前子单序号，如 S2607-6047-5-1
     current_order = order_no if order_no is not None else (items[0].order_no if items else "")
     sub_orders: list[str] = []
     if current_order:
         base = base_order_no(current_order)
+        # 按末尾 -N 后缀数字排序（字符串排序会让 -10/-11 排在 -2 前面）
         sub_orders = sorted({
             it.order_no for it in source_items
             if it.order_no and base_order_no(it.order_no) == base
-        })
+        }, key=_sub_order_sort_key)
         if len(sub_orders) > 1:
             try:
                 idx = sub_orders.index(current_order) + 1
@@ -1941,8 +1965,9 @@ def fill_hardware_sheets(wb, hardware_items: list[HardwareItem], groups: list | 
         _prepare_hardware_sheet(ws, sheet_no, page_idx)
         for idx, item in enumerate(chunk, start=1):
             row = 5 + idx
+            name_text = hardware_display_name(item.name)
             ws.cell(row, 1).value = idx
-            ws.cell(row, 2).value = hardware_display_name(item.name)
+            ws.cell(row, 2).value = name_text
             ws.cell(row, 9).value = item.qty
             ws.cell(row, 10).value = item.unit if item.unit else hardware_unit(item.name)
             ws.cell(row, 12).value = item.length if item.name.startswith("PDJ19") else None
@@ -1950,6 +1975,20 @@ def fill_hardware_sheets(wb, hardware_items: list[HardwareItem], groups: list | 
             ws.cell(row, 17).value = hardware_price(item.name)
             ws.cell(row, 18).value = hardware_total_formula(row, item.name)
             ws.cell(row, 19).value = item.area
+            # 名称格是 B:H 合并单元格（自动换行），行高默认只有一行；
+            # 名称含换行或超宽时按估算行数加高行高，避免文字被裁掉
+            font_size = ws.cell(row, 2).font.size or 11
+            name_col_width = sum(
+                (ws.column_dimensions[get_column_letter(c)].width or 8.43)
+                for c in range(2, 9)
+            )
+            capacity = max((name_col_width - 1) / (font_size / 11), 4)
+            name_lines = 0
+            for seg in str(name_text).split("\n"):
+                disp_width = sum(2 if unicodedata.east_asian_width(ch) in "WF" else 1 for ch in seg)
+                name_lines += max(1, math.ceil(disp_width / capacity))
+            if name_lines > 1:
+                ws.row_dimensions[row].height = 21 + 15 * (name_lines - 1)
         merge_hardware_remark_blocks(ws, chunk)
         if page_idx is not None and page_idx not in hw_sheet_by_page:
             hw_sheet_by_page[page_idx] = ws.title
