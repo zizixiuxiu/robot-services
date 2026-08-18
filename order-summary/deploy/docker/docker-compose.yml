@@ -1,16 +1,15 @@
-name: hardware-summary
+name: order-summary
 
 services:
-  hardware-summary:
+  order-summary:
     build:
       context: ../..
       dockerfile: deploy/docker/Dockerfile
       additional_contexts:
-        # 公共库在仓库根目录（构建上下文之外）
-        factory-common: ../../..
-    container_name: hardware-summary-8001
+        factory-common: ../../..   # 仓库根目录（公共库）
+    container_name: order-summary-8011
     ports:
-      - "8001:8001"
+      - "0.0.0.0:8011:8011"
     volumes:
       - ../../src:/app/src:ro
       - ../../../factory-common/factory_common:/app/factory_common:ro
@@ -18,10 +17,10 @@ services:
       - ../../logs:/app/logs
     environment:
       - PYTHONUNBUFFERED=1
+      - OUTPUT_BASE=/app/data/output
       - LOG_DIR=/app/logs
-      - HARDWARE_MAX_WORKERS=2
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8011/health')"]
       interval: 30s
       timeout: 10s
       retries: 3

@@ -10,9 +10,6 @@
     },
     "4": {
       "exclude_names": ["张雪莲"]
-    },
-    "6": {
-      "summary_exclude_names": ["蒋进"]
     }
   }
 }

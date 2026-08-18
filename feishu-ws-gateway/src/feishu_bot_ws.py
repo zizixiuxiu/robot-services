@@ -3,7 +3,7 @@
 独立飞书 Bot 网关 — WebSocket 模式（基于 lark_oapi.ws.Client）
 
 绕过 Gateway LLM，直接通过 lark_oapi 的 websocket 客户端接收飞书消息，
-文件消息路由到本地 HTTP 服务（8001-8009）处理。
+文件消息路由到本地 HTTP 服务（8001-8010）处理。
 
 群路由配置（chat_id → 服务端口）：
   oc_f74b3f332d275f70ba22b4332b5b442d → 8002 (order-split)
@@ -96,7 +96,48 @@ CHAT_ROUTES = {
     "oc_ccb759f87c198521c575984b3f316cb8": {"port": 8008, "name": "酷家乐月度经销商数据"},
     # 员工月度考勤群
     "oc_8b2a06d65c0b22fcdb24965898d86290": {"port": 8009, "name": "员工月度考勤"},
+    # 木皮优化群（门扇转换）
+    "oc_9067ef06c46495ac35328d89bc16017d": {"port": 8010, "name": "木皮优化"},
+    # 联思木皮优化群（PMS 优化门扇清单拆分）
+    "oc_a4c44ef470d8a31456667367afff51b8": {"port": 8013, "name": "联思木皮优化"},
+    # PVC订单汇总群
+    "oc_b34c4d5f830f59b22d5e1a49bfbb630a": {"port": 8011, "name": "PVC订单汇总"},
 }
+
+# 木皮优化群 chat_id（该群支持文本命令管理剔除清单）
+DOOR_SKIN_CHAT_ID = "oc_9067ef06c46495ac35328d89bc16017d"
+DOOR_SKIN_PORT = 8010
+
+# PVC优化群 chat_id（该群支持文本命令触发完整流程）
+PVC_OPTIMIZE_CHAT_ID = "oc_51479339eef6b26fe9dcdcb8a5fb0c50"
+PVC_TRIGGER_URL = "http://host.docker.internal:8012/process"
+
+# @ 提醒用户映射（中文名 -> open_id）
+AT_USER_MAP = {
+    "胡娅": "ou_514e834114d0d71a519317197db98308",
+    "刘佳": "ou_665c8b46b87c1bb2d213c7644eb3e68b",
+}
+
+
+def _replace_at_mentions(text: str) -> str:
+    """把 @中文名 替换为飞书文本消息的 at 标签。"""
+    for name, uid in AT_USER_MAP.items():
+        text = text.replace(f'@{name}', f'<at user_id="{uid}">{name}</at>')
+    return text
+
+
+def _replace_at_mentions_in_card(obj):
+    """递归替换卡片中的 @中文名 为卡片 at 标签。"""
+    if isinstance(obj, dict):
+        return {k: _replace_at_mentions_in_card(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_replace_at_mentions_in_card(v) for v in obj]
+    if isinstance(obj, str):
+        for name, uid in AT_USER_MAP.items():
+            obj = obj.replace(f'@{name}', f'<at id="{uid}">{name}</at>')
+        return obj
+    return obj
+
 
 for _chat_id in [x.strip() for x in os.getenv("FEISHU_QUOTE_CHAT_ID", "").split(",") if x.strip()]:
     CHAT_ROUTES[_chat_id] = {"port": 8007, "name": "报价单生成"}
@@ -233,8 +274,8 @@ def _upload_feishu_file(chat_id: str, file_path: str) -> str:
     return _upload_feishu_file_content(chat_id, filename, file_data)
 
 
-def _send_feishu_message(chat_id: str, msg_type: str, content: dict) -> None:
-    """发送飞书消息"""
+def _send_feishu_message(chat_id: str, msg_type: str, content: dict) -> str | None:
+    """发送飞书消息，返回 message_id（若接口返回）。"""
     token = _get_tenant_access_token()
     receive_id_type = "open_id" if chat_id.startswith("ou_") else "chat_id"
     url = f"https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type={receive_id_type}"
@@ -251,6 +292,32 @@ def _send_feishu_message(chat_id: str, msg_type: str, content: dict) -> None:
         res = json.loads(resp.read().decode("utf-8"))
     if res.get("code") != 0:
         logger.warning("发送消息失败: %s", res)
+        return None
+    return (res.get("data") or {}).get("message_id")
+
+
+# 缓存发送过的卡片，用于点击后更新
+_card_message_cache: dict[str, dict] = {}
+
+
+def _update_card_message(message_id: str, card: dict) -> None:
+    """更新已发送的卡片消息。"""
+    if not message_id:
+        return
+    token = _get_tenant_access_token()
+    url = f"https://open.feishu.cn/open-apis/im/v1/messages/{message_id}"
+    body = json.dumps({"content": json.dumps(card, ensure_ascii=False)}).encode("utf-8")
+    req = urllib_request.Request(url, data=body, headers={
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json; charset=utf-8",
+    }, method="PATCH")
+    try:
+        with urllib_request.urlopen(req, timeout=10) as resp:
+            res = json.loads(resp.read().decode("utf-8"))
+        if res.get("code") != 0:
+            logger.warning("[%s] 更新卡片失败: %s", message_id, res)
+    except Exception as e:
+        logger.warning("[%s] 更新卡片异常: %s", message_id, e)
 
 
 def _send_text(chat_id: str, text: str) -> None:
@@ -281,6 +348,122 @@ def _call_local_service(port: int, input_path: str, filename: str, order_date: s
     opener = urllib_request.build_opener(urllib_request.ProxyHandler({}))
     with opener.open(req, timeout=120) as resp:
         return json.loads(resp.read().decode("utf-8"))
+
+
+# ---------------------------------------------------------------------------
+# 木皮优化群：文本命令管理剔除清单（8010）
+# ---------------------------------------------------------------------------
+
+_EXCLUSION_CMD_USAGE = (
+    "支持的命令（@我或直接发均可）：\n"
+    "• 加剔除 型号或关键词（可多个，空格分隔，自动识别型号/关键词）\n"
+    "• 加型号 YM-999 / 加关键词 铝框门（指定类型）\n"
+    "• 删剔除 型号或关键词（只能删群里加的，内置型号需改代码）\n"
+    "• 剔除列表（查看当前完整清单）"
+)
+
+
+def _call_door_skin_exclusions(payload: dict = None) -> dict:
+    """调用 8010 的剔除清单接口，payload 为 None 时是查询。"""
+    url = f"http://{HTTP_SERVICE_HOST}:{DOOR_SKIN_PORT}/exclusions"
+    data = None
+    headers = {}
+    if payload is not None:
+        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    req = urllib_request.Request(url, data=data, headers=headers)
+    opener = urllib_request.build_opener(urllib_request.ProxyHandler({}))
+    with opener.open(req, timeout=30) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def _format_exclusions_reply(result: dict, action_desc: str = "") -> str:
+    models = result.get("models", [])
+    keywords = result.get("keywords", [])
+    lines = []
+    if action_desc:
+        lines.append(action_desc)
+    lines.append(f"📑 当前剔除清单（{len(models)} 个型号 + {len(keywords)} 个关键词，命中即不生成）")
+    lines.append("型号：" + "、".join(models))
+    lines.append("关键词：" + ("、".join(keywords) if keywords else "无"))
+    return "\n".join(lines)
+
+
+def _handle_pvc_process_command(chat_id: str, raw_text: str) -> None:
+    """处理 PVC优化群文本命令：触发完整 PVC 流程"""
+    logger.info("[%s] 收到 PVC 处理命令: %s", chat_id, raw_text)
+    try:
+        body = json.dumps({
+            "chat_id": chat_id,
+            "text": raw_text,
+        }, ensure_ascii=False).encode("utf-8")
+        req = urllib_request.Request(
+            PVC_TRIGGER_URL,
+            data=body,
+            headers={"Content-Type": "application/json; charset=utf-8"},
+            method="POST",
+        )
+        with urllib_request.urlopen(req, timeout=10) as resp:
+            res = json.loads(resp.read().decode("utf-8"))
+        if not res.get("success"):
+            _send_text(chat_id, f"⚠️ 触发失败：{res.get('error', '未知错误')}")
+    except Exception as e:
+        logger.exception("[%s] 调用 PVC 触发服务失败", chat_id)
+        _send_text(chat_id, f"❌ 触发 PVC 流程失败：{str(e)}")
+
+
+def _handle_door_skin_text_command(chat_id: str, raw_text: str) -> None:
+    """处理木皮优化群里的剔除清单管理命令。"""
+    text = re.sub(r"<at[^>]*>.*?</at>", "", raw_text)
+    text = re.sub(r"@_user_\d+", "", text).strip()
+    if not text:
+        return
+
+    try:
+        if text in ("剔除列表", "查看剔除", "剔除表", "剔除帮助"):
+            if text == "剔除帮助":
+                _send_text(chat_id, _EXCLUSION_CMD_USAGE)
+                return
+            result = _call_door_skin_exclusions()
+            _send_text(chat_id, _format_exclusions_reply(result))
+            return
+
+        m = re.match(r"^(加剔除|添加剔除|加型号|加关键词)\s*[：: ]?\s*(.+)$", text)
+        if m:
+            cmd, rest = m.group(1), m.group(2)
+            kind = {"加型号": "model", "加关键词": "keyword"}.get(cmd, "auto")
+            items = [x for x in re.split(r"[\s,，、]+", rest) if x]
+            result = _call_door_skin_exclusions({"action": "add", "items": items, "kind": kind})
+            parts = []
+            added = result.get("added", {})
+            if added.get("models"):
+                parts.append("已加型号：" + "、".join(added["models"]))
+            if added.get("keywords"):
+                parts.append("已加关键词：" + "、".join(added["keywords"]))
+            if result.get("skipped"):
+                parts.append("跳过：" + "、".join(result["skipped"]))
+            desc = "✅ " + "；".join(parts) if parts else "⚠️ 没有新增项"
+            _send_text(chat_id, _format_exclusions_reply(result, desc))
+            return
+
+        m = re.match(r"^(删剔除|删除剔除|取消剔除)\s*[：: ]?\s*(.+)$", text)
+        if m:
+            items = [x for x in re.split(r"[\s,，、]+", m.group(2)) if x]
+            result = _call_door_skin_exclusions({"action": "remove", "items": items})
+            parts = []
+            if result.get("removed"):
+                parts.append("已删除：" + "、".join(result["removed"]))
+            if result.get("skipped"):
+                parts.append("跳过：" + "、".join(result["skipped"]))
+            desc = "✅ " + "；".join(parts) if parts else "⚠️ 没有删除项"
+            _send_text(chat_id, _format_exclusions_reply(result, desc))
+            return
+
+        if text.startswith("剔除"):
+            _send_text(chat_id, _EXCLUSION_CMD_USAGE)
+    except Exception as e:
+        logger.exception("[%s] 剔除命令处理失败", chat_id)
+        _send_text(chat_id, f"❌ 剔除命令处理失败：{e}")
 
 
 # ---------------------------------------------------------------------------
@@ -316,6 +499,9 @@ def _service_name_for_port(port: int, fallback: str = "单文件处理") -> str:
         8007: "报价单生成",
         8008: "酷家乐月度经销商数据",
         8009: "员工月度考勤",
+        8010: "木皮优化",
+        8011: "PVC订单汇总",
+        8013: "联思木皮优化",
     }.get(port, fallback)
 
 
@@ -644,7 +830,7 @@ def _detect_may_sales_type(file_name: str) -> str:
         return "zhcx"
     if "联思" in name:
         return "liansi"
-    if "奢匠" in name or "下单统计" in name:
+    if "奢匠" in name or "下单统计" in name or "线下" in name:
         return "shejiang"
     return "unknown"
 
@@ -743,7 +929,11 @@ def _process_dealer_sales_batch(chat_id: str, service_name: str, is_final: bool 
 
         month = _extract_month_from_dealer_sales_files(files)
         month_text = f"{month}月" if month else ""
-        _send_text(chat_id, f"\u2705 {service_name}{month_text}处理完成，共 {sent_count} 个文件，请检查。")
+        msg = f"\u2705 {service_name}{month_text}处理完成，共 {sent_count} 个文件，请检查。"
+        warnings = _collect_result_warnings(result)
+        if warnings:
+            msg += "\n\n" + "\n".join(warnings)
+        _send_text(chat_id, msg)
     except Exception as e:
         logger.exception("[%s] 处理异常", chat_id)
         _send_text(chat_id, f"\u274c 处理异常：{str(e)}")
@@ -1005,6 +1195,13 @@ def _process_file(chat_id: str, message_id: str, file_key: str, file_name: str, 
 
         # 兼容 output_files 模式（字符串路径、dict 列表，或 {原始文件名: [file, ...]} 字典）
         raw_output_files = result.get("output_files", [])
+        if result.get("card"):
+            card = _replace_at_mentions_in_card(result["card"])
+            msg_id = _send_feishu_message(chat_id, "interactive", card)
+            if msg_id:
+                _card_message_cache[msg_id] = card
+        elif result.get("message"):
+            _send_text(chat_id, _replace_at_mentions(result["message"]))
         output_files = _flatten_output_files(raw_output_files)
         for item in output_files:
             sent_count += _send_output_item(chat_id, item, "从 output_files 内容上传", "检查 output_files", False, True)
@@ -1048,6 +1245,36 @@ def _on_message_receive(data) -> None:
 
         msg_type = msg.message_type
         content = msg.content
+
+        # 木皮优化群：文本命令管理剔除清单（加剔除/删剔除/剔除列表）
+        if msg_type == "text" and chat_id == DOOR_SKIN_CHAT_ID:
+            try:
+                content_json = json.loads(content) if isinstance(content, str) else content
+                raw_text = content_json.get("text", "")
+            except Exception:
+                raw_text = ""
+            if raw_text:
+                threading.Thread(
+                    target=_handle_door_skin_text_command,
+                    args=(chat_id, raw_text),
+                    daemon=True,
+                ).start()
+            return
+
+        # PVC优化群：文本命令触发完整流程（@机器人 + "处理"）
+        if msg_type == "text" and chat_id == PVC_OPTIMIZE_CHAT_ID:
+            try:
+                content_json = json.loads(content) if isinstance(content, str) else content
+                raw_text = content_json.get("text", "")
+            except Exception:
+                raw_text = ""
+            if raw_text and "处理" in raw_text:
+                threading.Thread(
+                    target=_handle_pvc_process_command,
+                    args=(chat_id, raw_text),
+                    daemon=True,
+                ).start()
+            return
 
         # 只处理文件
         if msg_type not in ("file", "audio", "media"):
@@ -1196,6 +1423,75 @@ def _health_check():
             _last_activity_time = time.time()
 
 
+def _build_confirmed_card(card: dict, confirmed_text: str) -> dict:
+    """把原卡片的按钮替换为已核对状态。"""
+    new_card = {
+        "config": card.get("config", {}),
+        "header": card.get("header", {}),
+        "elements": [],
+    }
+    for elem in card.get("elements", []):
+        if elem.get("tag") == "action":
+            new_card["elements"].append({
+                "tag": "div",
+                "text": {
+                    "tag": "lark_md",
+                    "content": confirmed_text,
+                },
+            })
+        else:
+            new_card["elements"].append(elem)
+    return new_card
+
+
+def _on_card_action(data) -> dict:
+    """处理消息卡片按钮点击事件。"""
+    try:
+        event = data.event
+        action_value = (event.action.value or {}) if event.action else {}
+        # 服务 → (绑定群, 核对人, 核对后文案)
+        confirm_config = {
+            "door-skin-converter": (
+                "oc_9067ef06c46495ac35328d89bc16017d",
+                "刘佳",
+                "✅ **刘佳已核对无误**\n<at id=\"ou_514e834114d0d71a519317197db98308\">胡娅</at> 请接收处理。",
+                "@胡娅 刘佳已核对无误，请接收处理。",
+            ),
+            "pms-door-split": (
+                "oc_a4c44ef470d8a31456667367afff51b8",
+                "胡娅",
+                "✅ **胡娅已核对无误**",
+                "胡娅已核对无误。",
+            ),
+        }
+        service = action_value.get("service")
+        if action_value.get("action") != "confirm" or service not in confirm_config:
+            return {"msg": "success"}
+        expected_chat, confirmer_name, confirmed_text, fallback_text = confirm_config[service]
+        chat_id = event.context.open_chat_id if event.context else None
+        if chat_id != expected_chat:
+            return {"msg": "success"}
+        operator_id = event.operator.open_id if event.operator else None
+        confirmer_id = AT_USER_MAP.get(confirmer_name)
+        if operator_id != confirmer_id:
+            logger.info("[%s] 非%s点击核对按钮: %s", chat_id, confirmer_name, operator_id)
+            return {"msg": "success"}
+        # 更新原卡片为已核对状态
+        msg_id = event.context.open_message_id if event.context else None
+        original_card = _card_message_cache.pop(msg_id, None) if msg_id else None
+        if original_card:
+            confirmed_card = _build_confirmed_card(original_card, confirmed_text)
+            _update_card_message(msg_id, confirmed_card)
+            logger.info("[%s] %s点击核对按钮，已更新卡片", chat_id, confirmer_name)
+        else:
+            # 如果找不到原卡片缓存，回退到发文本
+            _send_text(chat_id, _replace_at_mentions(fallback_text))
+            logger.info("[%s] %s点击核对按钮（无缓存回退）", chat_id, confirmer_name)
+    except Exception as e:
+        logger.error("处理卡片动作失败: %s", e, exc_info=True)
+    return {"msg": "success"}
+
+
 def main():
     # 先初始化日志再检查单实例
     logger.info("=" * 60)
@@ -1221,6 +1517,7 @@ def main():
     handler = (
         EventDispatcherHandler.builder("", "")
         .register_p2_im_message_receive_v1(_on_message_receive)
+        .register_p2_card_action_trigger(_on_card_action)
         .build()
     )
 

@@ -70,6 +70,11 @@ KW_AFTER_SALES = "\u552e\u540e"
 KW_AGREE_BOARD = "\u540c\u610f\u677f\u6750"
 KW_CRAFT = "\u5de5\u827a"
 
+# Wood-box row detection must only look at short label text. Long notes
+# (e.g. tu-wen-shuo-ming mentioning wood-box packaging) must not trigger
+# row clearing, otherwise page-total formulas on the same row get wiped.
+WOOD_BOX_LABEL_MAX_LENGTH = 12
+
 DROP_NOTE_KEYWORDS = (
     KW_ORIGINAL_ORDER,
 )
@@ -138,6 +143,7 @@ class TransformStats:
     filled_workpoints: int = 0
     skipped_prices: int = 0
     deleted_blank_rows: int = 0
+    frozen_external_links: int = 0
     moved_hardware_sheets: int = 0
     updated_order_numbers: int = 0
     warnings: list[str] = field(default_factory=list)
@@ -154,6 +160,7 @@ class TransformStats:
             "filled_workpoints": self.filled_workpoints,
             "skipped_prices": self.skipped_prices,
             "deleted_blank_rows": self.deleted_blank_rows,
+            "frozen_external_links": self.frozen_external_links,
             "moved_hardware_sheets": self.moved_hardware_sheets,
             "updated_order_numbers": self.updated_order_numbers,
             "warnings": self.warnings,
@@ -892,7 +899,7 @@ def process_detail_rows(ctx: DetailSheetContext, order_context: OrderContext, st
     for row_idx in range(ctx.header_row + 1, ctx.ws.max_row + 1):
         max_col = min(ctx.ws.max_column, BUSINESS_SCAN_MAX_COL)
         row_values = [text(ctx.ws.cell(row_idx, col_idx).value) for col_idx in range(1, max_col + 1)]
-        if any(KW_WOOD_BOX in value for value in row_values):
+        if any(KW_WOOD_BOX in value and len(value) <= WOOD_BOX_LABEL_MAX_LENGTH for value in row_values):
             if clear_wood_box_row(ctx, row_idx):
                 stats.cleared_wood_boxes += 1
             current_product = ""
@@ -915,7 +922,7 @@ def process_detail_rows(ctx: DetailSheetContext, order_context: OrderContext, st
                 stats.cleared_non_standard_color_fees += 1
             continue
 
-        if KW_WOOD_BOX in product:
+        if KW_WOOD_BOX in product and len(product) <= WOOD_BOX_LABEL_MAX_LENGTH:
             if clear_wood_box_row(ctx, row_idx):
                 stats.cleared_wood_boxes += 1
             continue
@@ -1080,6 +1087,76 @@ def process_detail_sheet(ctx: DetailSheetContext, order_context: OrderContext, s
     fit_long_note_rows(ctx.ws)
 
 
+EXTERNAL_REF_RE = re.compile(
+    r"^=\+?'?\[(?P<book>\d+)\](?P<sheet>[^'!\[\]]+)'?!(?P<cell>\$?[A-Z]{1,3}\$?\d+)$"
+)
+
+
+def external_link_cache(wb: Any) -> dict[tuple[int, str, str], Any]:
+    """Collect cached cell values from the workbook's external links."""
+    cache: dict[tuple[int, str, str], Any] = {}
+    for book_idx, link in enumerate(wb._external_links, start=1):
+        book = link.externalBook
+        names = list(book.sheetNames.sheetName) if book.sheetNames else []
+        dataset = book.sheetDataSet
+        if not names or dataset is None:
+            continue
+        for sheet_data in dataset.sheetData:
+            if sheet_data.sheetId is None or sheet_data.sheetId >= len(names):
+                continue
+            sheet_name = names[sheet_data.sheetId]
+            for ext_row in sheet_data.row:
+                for ext_cell in ext_row.cell:
+                    value: Any = ext_cell.v
+                    if value is not None and ext_cell.t != "str":
+                        try:
+                            value = int(value) if re.fullmatch(r"-?\d+", str(value)) else float(value)
+                        except (TypeError, ValueError):
+                            pass
+                    cache[(book_idx, sheet_name, ext_cell.r)] = value
+    return cache
+
+
+def freeze_external_links(wb: Any, stats: TransformStats) -> int:
+    """Replace external-workbook formulas with their cached values.
+
+    Quote templates keep dead links to old template files on other machines
+    (e.g. F:\\WeChat Files...). WPS/Excel then shows a "links cannot be
+    updated" warning on every open. Freezing the cached values keeps the
+    displayed content identical and lets us drop the external link parts.
+    """
+    if not wb._external_links:
+        return 0
+    cache = external_link_cache(wb)
+    frozen = 0
+    unresolved: list[str] = []
+    for ws in wb.worksheets:
+        max_col = min(ws.max_column, BUSINESS_SCAN_MAX_COL)
+        for row in ws.iter_rows(max_col=max_col):
+            for cell in row:
+                value = cell.value
+                if not isinstance(value, str) or not value.startswith("=") or "[" not in value:
+                    continue
+                match = EXTERNAL_REF_RE.match(value)
+                if not match:
+                    unresolved.append(f"{ws.title}!{cell.coordinate}")
+                    continue
+                key = (
+                    int(match.group("book")),
+                    match.group("sheet"),
+                    match.group("cell").replace("$", ""),
+                )
+                cell.value = cache.get(key)
+                frozen += 1
+    if unresolved:
+        stats.warnings.append(
+            "外部链接公式无法冻结（保留原公式）：" + ", ".join(unresolved[:10])
+        )
+    else:
+        wb._external_links = []
+    return frozen
+
+
 def enable_excel_recalculation(wb: Any) -> None:
     try:
         wb.calculation.fullCalcOnLoad = True
@@ -1157,6 +1234,7 @@ def transform(input_path: Path, output_path: Path, discount: float, order_type: 
     enable_excel_recalculation(wb)
     stats.moved_hardware_sheets = move_hardware_sheets_to_end(wb)
     stats.updated_order_numbers = normalize_order_numbers(wb, order_context.inferred_order_number)
+    stats.frozen_external_links = freeze_external_links(wb, stats)
 
     try:
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1241,7 +1319,7 @@ def main() -> None:
         f"cleared_non_standard_color_fees={stats['cleared_non_standard_color_fees']}, "
         f"summary_constants_removed={stats['summary_constants_removed']}, "
         f"updated_page_notes={stats['updated_page_notes']}, "
-        f"cleared_bottom_notes={stats['cleared_bottom_notes']}, "
+        f"cleared_bottom_notes={stats['cleared_bottom_notes']}, "f"frozen_external_links={stats['frozen_external_links']}, "
         f"filled_workpoints={stats['filled_workpoints']}, "
         f"skipped_prices={stats['skipped_prices']}, "
         f"deleted_blank_rows={stats['deleted_blank_rows']}, "

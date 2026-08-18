@@ -19,7 +19,7 @@ COPY config/package.json config/package-lock.json* ./
 RUN npm install
 
 # 复制应用代码（运行时通常由 volume 覆盖，用于保证镜像完整）
-COPY src/dealer_sales_http.py src/generate_may_sales_report.js ./
+COPY src/dealer_sales_http.py src/generate_may_sales_report.js src/generate_dealer_sales_report.js ./
 COPY src/templates ./templates
 
 # 公共库 factory-common（来自 compose additional_contexts，源在仓库根目录）

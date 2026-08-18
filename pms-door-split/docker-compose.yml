@@ -1,0 +1,20 @@
+services:
+  pms-door-split:
+    build: .
+    container_name: pms-door-split-8013
+    restart: unless-stopped
+    ports:
+      - "8013:8013"
+    environment:
+      MAX_UPLOAD_BYTES: "52428800"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8013/health', timeout=3)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"

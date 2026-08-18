@@ -13,14 +13,25 @@ SRC_DIR = Path(__file__).resolve().parents[1] / "src"
 sys.path.insert(0, str(SRC_DIR))
 
 from make_workshop_order import (  # noqa: E402
+    TransformStats,
     clean_payment_amount_text,
     find_existing_order_number,
     fit_long_note_rows,
+    freeze_external_links,
     infer_order_number,
     is_hardware_sheet_name,
     is_hunyou_color,
     remove_payment_amount_info,
     transform,
+)
+from openpyxl.workbook.external_link.external import (  # noqa: E402
+    ExternalBook,
+    ExternalCell,
+    ExternalLink,
+    ExternalRow,
+    ExternalSheetData,
+    ExternalSheetDataSet,
+    ExternalSheetNames,
 )
 
 
@@ -187,6 +198,62 @@ class WorkshopOrderRuleTests(unittest.TestCase):
         # 合并区域合计高度不够时，差值补到首行，而不是整段高度
         self.assertGreater(ws.row_dimensions[15].height, 25)
         self.assertLessEqual(ws.row_dimensions[15].height + 25, 180)
+
+    def test_long_note_mentioning_wood_box_does_not_wipe_page_total(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            source_path = tmpdir / "S2607-4068-sample.xlsx"
+            output_path = tmpdir / "S2607-4068-sample下车间.xlsx"
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "1"
+            # 表头：产品/单价/小计/工分
+            ws["C7"] = "产品名称"
+            ws["K7"] = "单价（元）"
+            ws["L7"] = "小计（元）"
+            ws["M7"] = "工分"
+            # 一条普通产品行
+            ws["C8"] = "80欧式线条"
+            ws["K8"] = 32
+            ws["L8"] = "=I8*K8"
+            # 木箱包装行（短标签，应被清除金额）
+            ws["C9"] = "木箱包装"
+            ws["D9"] = "此单共打4个木箱包装"
+            ws["L9"] = "=150*4"
+            # 图文说明长备注里提到“木箱包装”，同行的页合计公式必须保留
+            ws["A10"] = "图文说明:玻门单独打木箱包装，与木门单JF26-07-28-70012一起油漆出货"
+            ws["L10"] = "=+SUM(L8:L9)"
+            wb.save(source_path)
+
+            transform(source_path, output_path, 0.85, "auto")
+
+            out = load_workbook(output_path)
+            self.assertIsNone(out["1"]["L9"].value)
+            self.assertEqual(out["1"]["L10"].value, "=+SUM(L8:L9)")
+
+    def test_freeze_external_links_replaces_formula_and_drops_link(self) -> None:
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "1"
+        ws["E3"] = "='[1]1'!Q5"
+        ws["A27"] = "='[1]汇总'!D23"
+        book = ExternalBook(
+            sheetNames=ExternalSheetNames(sheetName=["1", "汇总"]),
+            sheetDataSet=ExternalSheetDataSet(sheetData=[
+                ExternalSheetData(sheetId=0, row=[ExternalRow(r=5, cell=[ExternalCell(r="Q5", v="-1")])]),
+                ExternalSheetData(sheetId=1, row=[ExternalRow(r=23, cell=[ExternalCell(r="D23", t="str", v="此单共页")])]),
+            ]),
+        )
+        link = ExternalLink(externalBook=book)
+        wb._external_links = [link]
+        stats = TransformStats(order_type="tiepi")
+
+        frozen = freeze_external_links(wb, stats)
+
+        self.assertEqual(frozen, 2)
+        self.assertEqual(ws["E3"].value, -1)
+        self.assertEqual(ws["A27"].value, "此单共页")
+        self.assertEqual(wb._external_links, [])
 
 
 if __name__ == "__main__":

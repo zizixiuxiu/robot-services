@@ -476,7 +476,8 @@ def items_from_sheet(
         row = row_values_with_merges(sheet, row_idx, lookup)
         if not row[3]:
             continue
-        if not str(row[8]).strip():
+        # 无材质行默认进五金，但"门洞"这类特殊行要进正单
+        if not str(row[8]).strip() and "门洞" not in str(row[3]):
             continue
         row_order_no = inferred_orders.get(row_idx) or normalized_order_no(row[1])
         if not row_order_no:
@@ -534,8 +535,8 @@ def hardware_items_from_sheet(
             continue
         if str(row[8]).strip():
             continue
-        # "洞口尺寸" etc. are not hardware; skip them.
-        if "洞口" in name:
+        # "洞口尺寸" etc. are not hardware; skip them. "门洞"也不是五金（应进正单）
+        if "洞口" in name or "门洞" in name:
             continue
         qty, unit = parse_quantity(row[7])
         if not has_value(qty):
@@ -663,24 +664,31 @@ def group_by_area(items: list[Item], exclude_areas: set[str] | None = None) -> l
 
 
 def group_by_color(items: list[Item]) -> list[tuple[str, list[Item]]]:
-    """按（子订单号，颜色）分组，同一子订单的同一颜色进入同一个 sheet。
+    """按颜色分表，分页优先级：子订单编号 > 区域。
 
-    当设计师在订单编号里用 -1/-2/-3 区分子订单时，每个子订单会生成独立 sheet，
-    避免同一个颜色被合并到单个 sheet 中。
+    - 订单编号带 -1/-2/-3 子单号的：按（子单号, 颜色）分页，一个编号一页，
+      同一编号下不同区域合并在同一页；
+    - 订单编号没有子单号的：按（颜色, 区域）分页，同一颜色同一区域一页，
+      同一颜色不同区域拆分为独立 sheet。
     """
     groups: list[tuple[str, list[Item]]] = []
-    grouped: dict[tuple[str, str], list[Item]] = {}
-    keys: list[tuple[str, str]] = []
+    grouped: dict[tuple[str, str, str], list[Item]] = {}
+    keys: list[tuple[str, str, str]] = []
     for item in items:
         color = item.color or "未填颜色"
-        key = (item.order_no or "", color)
+        order_no = item.order_no or ""
+        has_sub = bool(order_no) and base_order_no(order_no) != order_no
+        if has_sub:
+            key = (order_no, color, "")
+        else:
+            key = ("", color, item.area or "")
         if key not in grouped:
             grouped[key] = []
             keys.append(key)
         grouped[key].append(item)
-    for order_no, color in keys:
-        label = f"{order_no} {color}" if order_no else color
-        groups.append((label, grouped[(order_no, color)]))
+    for order_no, color, area in keys:
+        label = " ".join(part for part in (order_no, color, area) if part)
+        groups.append((label, grouped[(order_no, color, area)]))
     return groups
 
 
@@ -782,9 +790,17 @@ def build_quote_col_map(template_ws: Worksheet, header_row: int = 7) -> dict[str
     return col_map
 
 
+def quote_page_layout(ws: Worksheet, sheet_no: int) -> tuple[int, int]:
+    """根据工作表“合计”行动态推导数据区容量与插入位置，兼容新旧模板。"""
+    sum_row = find_quote_sum_row(ws)
+    if sum_row:
+        return sum_row - 8, sum_row
+    return (7, 15) if sheet_no == 1 else (9, 17)
+
+
 def ensure_data_capacity(ws: Worksheet, item_count: int) -> None:
-    capacity = 7 if ws.title == "1" else 9
-    insert_at = 15 if ws.title == "1" else 17
+    sheet_no = int(ws.title) if ws.title.isdigit() else 1
+    capacity, insert_at = quote_page_layout(ws, sheet_no)
     if item_count > capacity:
         extra = item_count - capacity
         ws.insert_rows(insert_at, extra)
@@ -1139,16 +1155,30 @@ def area_formula_text(row: int, item: Item) -> str | None:
     return f"=E{row}/1000*F{row}/1000*H{row}"
 
 
-def quote_meter_value(item: Item) -> Any:
-    """Return meter total only for slim strip-like products; others leave blank."""
+def quote_meter_value(item: Item, row: int | None = None) -> Any:
+    """Return meter total only for slim strip-like products; others leave blank.
+
+    返回公式（引用本行 高/宽/数量 单元格），方便后续改尺寸自动重算；每件保底 1 米。
+    """
+    def fmt(value: str) -> str:
+        return value.format(row=row) if row is not None else value
+
     if "弧形" in item.name:
         return None
     if not is_strip_with_small_dimension(item):
         return None
+    num_height = to_number(item.height)
+    num_width = to_number(item.width)
     if has_value(item.meter):
         number = to_number(item.meter)
         qty = to_number(item.qty)
         if number is not None and qty:
+            if num_height is not None and num_width is not None:
+                return fmt("=MAX(MAX(E{row},F{row})/1000,1)*H{row}")
+            if num_height is not None:
+                return fmt("=MAX(E{row}/1000,1)*H{row}")
+            if num_width is not None:
+                return fmt("=MAX(F{row}/1000,1)*H{row}")
             return meter_total_with_piece_minimum(number / qty, qty)
     height = dimension_total(item.height)
     width = dimension_total(item.width)
@@ -1156,10 +1186,16 @@ def quote_meter_value(item: Item) -> Any:
     if qty is None:
         return None
     if height is not None and has_small_dimension(item.width):
+        if num_height is not None:
+            return fmt("=MAX(E{row}/1000,1)*H{row}")
         return meter_total_with_piece_minimum(height / 1000, qty)
     if width is not None and has_small_dimension(item.height):
+        if num_width is not None:
+            return fmt("=MAX(F{row}/1000,1)*H{row}")
         return meter_total_with_piece_minimum(width / 1000, qty)
     if height is not None and width is not None:
+        if num_height is not None and num_width is not None:
+            return fmt("=MAX(MAX(E{row},F{row})/1000,1)*H{row}")
         return meter_total_with_piece_minimum(max(height, width) / 1000, qty)
     return None
 
@@ -1197,13 +1233,21 @@ def quote_area_value(item: Item) -> Any:
     if is_strip_with_small_dimension(item) and height is not None and width is not None and qty is not None:
         per_piece = height / 1000 * width / 1000
         if per_piece < 0.1:
-            return area_total_with_piece_minimum(per_piece, qty)
+            # 单块不足 0.1 按 0.1 计算；保留公式方便改尺寸自动重算
+            return f"=MAX(E{{row}}/1000*F{{row}}/1000,0.1)*H{{row}}"
         return f"=E{{row}}/1000*F{{row}}/1000*H{{row}}"
 
     if has_value(item.src_area_value):
         src = float(item.src_area_value)
         qty_num = to_number(item.qty)
-        # 单块不足 0.1 的按 0.1 计算
+        num_height = to_number(item.height)
+        num_width = to_number(item.width)
+        # 尺寸齐全时保留算量公式，后续改尺寸自动重算
+        if num_height is not None and num_width is not None and qty_num:
+            # 单块不足 0.1 的按 0.1 计算
+            if src / qty_num < 0.1:
+                return f"=MAX(E{{row}}/1000*F{{row}}/1000,0.1)*H{{row}}"
+            return f"=E{{row}}/1000*F{{row}}/1000*H{{row}}"
         if qty_num and qty_num > 0 and src / qty_num < 0.1:
             return area_total_with_piece_minimum(src / qty_num, qty_num)
         return item.src_area_value
@@ -1211,7 +1255,7 @@ def quote_area_value(item: Item) -> Any:
     if height is not None and width is not None and qty is not None:
         per_piece = height / 1000 * width / 1000
         if per_piece < 0.1:
-            return area_total_with_piece_minimum(per_piece, qty)
+            return f"=MAX(E{{row}}/1000*F{{row}}/1000,0.1)*H{{row}}"
         return f"=E{{row}}/1000*F{{row}}/1000*H{{row}}"
     return None
 
@@ -1258,7 +1302,8 @@ def input_quote_total_formula(row: int, item: Item) -> Any:
         return f"=K{row}*J{row}+20*H{row}"
     if input_quote_price(item) is not None:
         return f"=K{row}*J{row}"
-    return None
+    # 有内容的行都要有小计公式：默认 平方×单价，K 列填了单价就自动算出小计
+    return f"=J{row}*K{row}"
 
 
 def apply_input_quote_pricing(ws: Worksheet, row: int, item: Item) -> None:
@@ -1278,8 +1323,7 @@ def fill_page(
 ) -> int:
     base_merges = [str(rng) for rng in ws.merged_cells.ranges]
     special_count = (1 if sheet_no == 1 else 0) + (1 if sheet_no in PAGE_EXTRA_ROWS else 0) + 1
-    capacity = 7 if sheet_no == 1 else 9
-    insert_at = 15 if sheet_no == 1 else 17
+    capacity, insert_at = quote_page_layout(ws, sheet_no)
     delta = len(items) + special_count - capacity
     ensure_data_capacity(ws, len(items) + special_count)
     unmerge_data_area(ws, 7 + len(items) + special_count)
@@ -1303,7 +1347,7 @@ def fill_page(
         ws.cell(row, 6).value = item.width
         ws.cell(row, 7).value = item.thickness
         ws.cell(row, 8).value = item.qty
-        ws.cell(row, 9).value = quote_meter_value(item)
+        ws.cell(row, 9).value = quote_meter_value(item, row)
         ws.cell(row, 10).value = area_formula(row, item)
         ws.cell(row, 11).value = price_for(item)
         ws.cell(row, 12).value = line_total_formula(row, item)
@@ -1419,12 +1463,12 @@ def fill_page_input_only(
     header: dict[str, str],
     col_map: dict[str, int] | None = None,
     sub_orders: list[str] | None = None,
+    first_page_colors: list[str] | None = None,
 ) -> None:
     if col_map is None:
         col_map = build_quote_col_map(style_template_ws)
     special_count = 1
-    capacity = 7 if sheet_no == 1 else 9
-    insert_at = 15 if sheet_no == 1 else 17
+    capacity, insert_at = quote_page_layout(ws, sheet_no)
     delta = len(items) + special_count - capacity
     base_merges = [str(rng) for rng in ws.merged_cells.ranges]
     ensure_data_capacity(ws, len(items) + special_count)
@@ -1470,10 +1514,15 @@ def fill_page_input_only(
         ws.cell(row, 6).value = item.width
         ws.cell(row, 7).value = item.thickness
         ws.cell(row, 8).value = item.qty
-        ws.cell(row, 9).value = quote_meter_value(item)
+        ws.cell(row, 9).value = quote_meter_value(item, row)
         set_quote_area_cell(ws, row, item)
         apply_input_quote_pricing(ws, row, item)
-        ws.cell(row, 14).value = color_cells[i - 1]
+        if sheet_no > 1 and first_page_colors and first_page_colors[0]:
+            # 颜色跟随第 1 页：sheet1 颜色是 N8 开始的整块合并单元格，
+            # 其余页颜色统一映射 ='1'!N8，改 sheet1 一次全部生效
+            ws.cell(row, 14).value = "='1'!N8"
+        else:
+            ws.cell(row, 14).value = color_cells[i - 1]
         ws.cell(row, 16).value = item.material
         ws.cell(row, 17).value = item.remark
 
@@ -1501,6 +1550,9 @@ def fill_page_input_only(
     clear_auto_formulas(ws)
     for i, item in enumerate(items, start=1):
         apply_input_quote_pricing(ws, 7 + i, item)
+        # 米数/平方公式在 clear_auto_formulas 后重挂，确保保留算量公式
+        ws.cell(7 + i, 9).value = quote_meter_value(item, 7 + i)
+        set_quote_area_cell(ws, 7 + i, item)
     set_wood_box_packaging_row(ws, sum_row - 1, len(items) + 1)
     ws.cell(sum_row, 1).value = "合计"
     ws.cell(sum_row, 8).value = f"=SUM(H6:H{sum_row - 1})"
@@ -1520,8 +1572,12 @@ def clear_auto_formulas(ws: Worksheet) -> None:
     for row in range(8, ws.max_row + 1):
         for col in (11, 12, 13):
             cell = ws.cell(row, col)
-            if not isinstance(cell, MergedCell):
-                cell.value = None
+            if isinstance(cell, MergedCell):
+                continue
+            if isinstance(cell.value, str) and not cell.value.startswith("="):
+                # 保留模板静态文字（如 经销商确认、拆单、板材 等标签）
+                continue
+            cell.value = None
     for row in range(8 + 1, ws.max_row + 1):
         for col in (6, 8, 9, 15):
             cell = ws.cell(row, col)
@@ -1628,17 +1684,20 @@ def build_workbook_input_only(
     hardware_template.title = "_hardware_template"
     hardware_template.sheet_state = "hidden"
     for sheet_name in list(wb.sheetnames):
-        if sheet_name.isdigit() and int(sheet_name) > total_pages and wb[sheet_name].sheet_state == "visible":
-            del wb[sheet_name]
+        # 没用到的页不删除，隐藏即可（用户可自行取消隐藏复用）
+        if sheet_name.isdigit() and int(sheet_name) > total_pages:
+            wb[sheet_name].sheet_state = "hidden"
     for idx in range(3, total_pages + 1):
-        clone_sheet_layout(wb, base_other, str(idx), summary)
+        if str(idx) not in wb.sheetnames:
+            clone_sheet_layout(wb, base_other, str(idx), summary)
 
     col_map = build_quote_col_map(wb["1"])
+    first_page_colors = quote_color_cells_for_page(1, groups[0][1]) if groups else None
     for idx, (area, items) in enumerate(groups, start=1):
         ws = wb[str(idx)]
         style_template_ws = first_page_style if idx == 1 else other_page_style
-        fill_page_input_only(ws, idx, area, items, total_pages, style_template_ws, header, col_map, sub_orders)
-    fill_hardware_sheets(wb, hardware_items)
+        fill_page_input_only(ws, idx, area, items, total_pages, style_template_ws, header, col_map, sub_orders, first_page_colors)
+    fill_hardware_sheets(wb, hardware_items, groups)
     if "_hardware_template" in wb.sheetnames:
         del wb["_hardware_template"]
 
@@ -1765,18 +1824,24 @@ def hardware_subtotal_row(wb) -> int | None:
     return None
 
 
-def fill_hardware_sheets(wb, hardware_items: list[HardwareItem]) -> None:
-    if not hardware_items:
-        return
-    if "1\u4e94" in wb.sheetnames:
-        del wb["1\u4e94"]
-    if "\u4e94\u91d1-1" not in wb.sheetnames:
-        return
-    ws = wb["\u4e94\u91d1-1"]
+HARDWARE_SHEET_CAPACITY = 20
+
+
+def _group_hardware_key(group_items) -> tuple[set, set]:
+    """返回该正单页用于匹配五金行的 (子单号集合, 区域集合)。
+
+    页内条目有子单号（如 S2608-6049-1）时按子单号匹配五金；
+    否则按区域匹配（同一基础单号会被所有分组共享，不能用它匹配）。
+    """
+    order_nos = {item.order_no for item in group_items if item.order_no}
+    if any(base_order_no(no) != no for no in order_nos):
+        return order_nos, set()
+    return set(), {item.area for item in group_items if item.area}
+
+
+def _prepare_hardware_sheet(ws: Worksheet, sheet_no: int, page_idx: int | None) -> None:
+    """五金表填充前的版式准备（模板页与克隆页通用）。"""
     ws.sheet_state = "visible"
-    wb._sheets.remove(ws)
-    insert_at = wb._sheets.index(wb["汇总"]) if "汇总" in wb.sheetnames else len(wb._sheets)
-    wb._sheets.insert(insert_at, ws)
     ws.sheet_format.zeroHeight = False
     for row in range(1, 31):
         ws.row_dimensions[row].hidden = False
@@ -1788,8 +1853,7 @@ def fill_hardware_sheets(wb, hardware_items: list[HardwareItem]) -> None:
         ws.column_dimensions[get_column_letter(col)].hidden = False
     unmerge_hardware_remark_blocks(ws)
     restore_hardware_merges(ws)
-    # Match the user's reference file: header value cells reference the quote
-    # sheet and stay as 4-column merges; use the same column widths.
+    # 表头：品牌/经销商/客户等全局信息引用第 1 页；订单编号引用对应正单页
     ws["L3"] = "=+'1'!M2"
     ws["L4"] = "='1'!E3"
     for coord in ("J3", "J4", "L3", "L4"):
@@ -1800,8 +1864,10 @@ def fill_hardware_sheets(wb, hardware_items: list[HardwareItem]) -> None:
     ws.column_dimensions["M"].width = 0.875
     ws.column_dimensions["N"].width = 4.625
     ws.column_dimensions["O"].width = 1.75
-    ws["T3"] = -1
+    ws["T3"] = -sheet_no
     ws["T4"] = "=+T3"
+    if page_idx is not None:
+        set_cell(ws, 3, 19, f"='{page_idx}'!Q2&'{page_idx}'!R2")
     for row in range(6, 26):
         for col in (2, 9, 10, 12, 15, 17, 18, 19):
             cell = ws.cell(row, col)
@@ -1812,20 +1878,91 @@ def fill_hardware_sheets(wb, hardware_items: list[HardwareItem]) -> None:
     ws["I26"] = "=SUM(I6:I25)"
     ws["R26"] = "=SUM(R6:R25)"
 
-    for idx, item in enumerate(hardware_items[:20], start=1):
-        row = 5 + idx
-        ws.cell(row, 1).value = idx
-        ws.cell(row, 2).value = hardware_display_name(item.name)
-        ws.cell(row, 9).value = item.qty
-        ws.cell(row, 10).value = item.unit if item.unit else hardware_unit(item.name)
-        ws.cell(row, 12).value = item.length if item.name.startswith("PDJ19") else None
-        ws.cell(row, 15).value = item.width
-        ws.cell(row, 17).value = hardware_price(item.name)
-        ws.cell(row, 18).value = hardware_total_formula(row, item.name)
-        ws.cell(row, 19).value = item.area
-    merge_hardware_remark_blocks(ws, hardware_items)
-    if "\u4e94\u91d1-2" in wb.sheetnames:
-        wb["\u4e94\u91d1-2"].sheet_state = "hidden"
+
+def fill_hardware_sheets(wb, hardware_items: list[HardwareItem], groups: list | None = None) -> None:
+    """五金表与正单分页一致：正单怎么分页，五金表就怎么分（一个子单/区域一张表）。
+
+    - groups 传入正单分组 [(label, items), ...] 时，每个有五金的分组一张五金表；
+      五金按子单号匹配分组（无子单号的分组按区域匹配），已匹配的不再重复分配；
+      一个分组超过 20 行时续到下一表；未能匹配任何分组的五金追加在末尾，绝不丢失。
+    - groups 为空时退化为全部五金按 20 行/表顺序分页（兜底）。
+    模板自带的 五金-1/五金-2 复用，不够用 五金-2 克隆 五金-3/4...，多余的隐藏。
+    """
+    if "1\u4e94" in wb.sheetnames:
+        del wb["1\u4e94"]
+    if "\u4e94\u91d1-1" not in wb.sheetnames:
+        return
+    if not hardware_items:
+        return
+
+    # 1) 按正单分组拆分五金（按索引消费，避免重复行被误删）
+    chunks: list[tuple[int | None, list[HardwareItem]]] = []
+    if groups:
+        remaining = list(hardware_items)
+        for page_idx, (_label, group_items) in enumerate(groups, start=1):
+            order_nos, areas = _group_hardware_key(group_items)
+            hit = [
+                i for i, h in enumerate(remaining)
+                if (h.order_no and h.order_no in order_nos) or (h.area and h.area in areas)
+            ]
+            if not hit:
+                continue
+            hit_set = set(hit)
+            matched = [remaining[i] for i in hit]
+            remaining = [h for i, h in enumerate(remaining) if i not in hit_set]
+            for off in range(0, len(matched), HARDWARE_SHEET_CAPACITY):
+                chunks.append((page_idx, matched[off:off + HARDWARE_SHEET_CAPACITY]))
+        # 未匹配任何正单分组的五金追加在末尾（不静默丢失）
+        for off in range(0, len(remaining), HARDWARE_SHEET_CAPACITY):
+            chunks.append((None, remaining[off:off + HARDWARE_SHEET_CAPACITY]))
+    else:
+        for off in range(0, len(hardware_items), HARDWARE_SHEET_CAPACITY):
+            chunks.append((None, hardware_items[off:off + HARDWARE_SHEET_CAPACITY]))
+
+    # 2) 准备足够的五金表（必须在填充前克隆，保证克隆源是干净模板）
+    needed = len(chunks)
+    template_src = wb["\u4e94\u91d1-2"] if "\u4e94\u91d1-2" in wb.sheetnames else wb["\u4e94\u91d1-1"]
+    existing = sorted(
+        (name for name in wb.sheetnames if re.fullmatch(r"\u4e94\u91d1-\d+", name)),
+        key=lambda name: int(name.rsplit("-", 1)[1]),
+    )
+    for sheet_no in range(len(existing) + 1, needed + 1):
+        clone = wb.copy_worksheet(template_src)
+        clone.title = f"\u4e94\u91d1-{sheet_no}"
+        existing.append(clone.title)
+    hw_sheets = [wb[name] for name in existing[:needed]]
+    for name in existing[needed:]:
+        wb[name].sheet_state = "hidden"
+
+    # 3) 填充每张五金表（序号每表从 1 重新编）
+    hw_sheet_by_page: dict[int, str] = {}
+    for sheet_no, (page_idx, chunk) in enumerate(chunks, start=1):
+        ws = hw_sheets[sheet_no - 1]
+        _prepare_hardware_sheet(ws, sheet_no, page_idx)
+        for idx, item in enumerate(chunk, start=1):
+            row = 5 + idx
+            ws.cell(row, 1).value = idx
+            ws.cell(row, 2).value = hardware_display_name(item.name)
+            ws.cell(row, 9).value = item.qty
+            ws.cell(row, 10).value = item.unit if item.unit else hardware_unit(item.name)
+            ws.cell(row, 12).value = item.length if item.name.startswith("PDJ19") else None
+            ws.cell(row, 15).value = item.width
+            ws.cell(row, 17).value = hardware_price(item.name)
+            ws.cell(row, 18).value = hardware_total_formula(row, item.name)
+            ws.cell(row, 19).value = item.area
+        merge_hardware_remark_blocks(ws, chunk)
+        if page_idx is not None and page_idx not in hw_sheet_by_page:
+            hw_sheet_by_page[page_idx] = ws.title
+    wb._hw_sheet_by_page = hw_sheet_by_page
+
+    # 4) 五金表排在 汇总 之前，保持 五金-1..N 顺序
+    for ws in hw_sheets:
+        wb._sheets.remove(ws)
+    anchor = wb._sheets.index(wb["\u6c47\u603b"]) if "\u6c47\u603b" in wb.sheetnames else len(wb._sheets)
+    for offset, ws in enumerate(hw_sheets):
+        wb._sheets.insert(anchor + offset, ws)
+
+
 
 
 def restore_hardware_merges(ws: Worksheet) -> None:
@@ -1881,14 +2018,17 @@ def write_summary_page_formulas(wb, subtotal_rows: dict[int, int]) -> None:
             cell = ws.cell(row, col)
             if not isinstance(cell, MergedCell):
                 cell.value = None
+    hw_sheet_by_page = getattr(wb, "_hw_sheet_by_page", {})
     for idx in sorted(subtotal_rows):
         row = idx + 2
         ws.cell(row, 1).value = "='1'!Q2" if idx == 1 else f"=A{row - 1}"
         ws.cell(row, 2).value = idx
         ws.cell(row, 3).value = f"='{idx}'!L{subtotal_rows[idx]}"
-        if idx == 1:
-            if "\u4e94\u91d1-1" in wb.sheetnames:
-                ws.cell(row, 4).value = "='\u4e94\u91d1-1'!R26"
+        hw_name = hw_sheet_by_page.get(idx)
+        if hw_name is None and idx == 1 and "\u4e94\u91d1-1" in wb.sheetnames:
+            hw_name = "\u4e94\u91d1-1"  # 无分组映射时的旧行为兜底
+        if hw_name is not None:
+            ws.cell(row, 4).value = f"='{hw_name}'!R26"
     total_row = max(31, len(subtotal_rows) + 3)
     ws.cell(total_row, 3).value = f"=SUM(C3:C{len(subtotal_rows) + 2})"
     ws.cell(total_row, 4).value = f"=SUM(D3:D{len(subtotal_rows) + 2})"
@@ -1899,7 +2039,7 @@ def normalize_quote_footer_formulas(wb) -> None:
     subtotal_rows: dict[int, int] = {}
     sum_rows: dict[int, int] = {}
     for ws in wb.worksheets:
-        if not ws.title.isdigit():
+        if not ws.title.isdigit() or ws.sheet_state != "visible":
             continue
         sum_row = find_quote_sum_row(ws)
         if sum_row:
@@ -1931,9 +2071,17 @@ def normalize_quote_footer_formulas(wb) -> None:
     parts = [f"L{subtotal_rows[1]}"]
     parts.extend(f"'{idx}'!L{subtotal_rows[idx]}" for idx in range(2, total_pages + 1) if idx in subtotal_rows)
     set_cell(sheet1, first_total, 12, "=" + "+".join(parts))
-    if "\u4e94\u91d1-1" in wb.sheetnames:
+    hw_names = sorted(
+        (name for name in wb.sheetnames
+         if re.fullmatch(r"\u4e94\u91d1-\d+", name) and wb[name].sheet_state == "visible"),
+        key=lambda name: int(name.rsplit("-", 1)[1]),
+    )
+    hw_parts = [f"'{name}'!R26" for name in hw_names]
+    if "铝框门" in wb.sheetnames:
+        hw_parts.append("铝框门!M26")
+    if hw_parts:
         set_cell(sheet1, first_total, 14, "\u4e94\u91d1")
-        set_cell(sheet1, first_total, 15, "='\u4e94\u91d1-1'!R26")
+        set_cell(sheet1, first_total, 15, "=" + "+".join(hw_parts))
     set_cell(sheet1, first_amount_note, 4, f'="\u6b64\u5355\u5171"&{page_count_formula}&"\u9875\uff0c\u5408\u8ba1\u91d1\u989d\u4e3a"&F{first_total}&"\u5143\uff01"')
     set_cell(sheet1, first_process_link, 1, f"=+A{first_note}")
     set_cell(sheet1, first_delivery, 3, f"=N{first_maker + 2}")
@@ -1961,7 +2109,6 @@ def normalize_quote_footer_formulas(wb) -> None:
         clear_footer_formulas(ws, sum_row)
         fix_quote_page_sum_row(ws)
         set_cell(ws, note_row, 1, f"='1'!A{first_note}")
-        set_cell(ws, note_row, 6, f"=INT(F{note_row + 1}*0.5/100+0.55)*100")
         set_cell(ws, note_row, 12, f"=+SUM(L8:L{sum_row - 1})")
         set_cell(ws, carry_row, 4, f"='{prev_no}'!D{prev_carry_row}")
         set_cell(ws, maker_row, 3, f"='1'!C{first_maker}")
@@ -1982,7 +2129,7 @@ def normalize_quote_footer_formulas(wb) -> None:
 def rewrite_input_page_totals(wb) -> None:
     subtotal_rows: dict[int, int] = {}
     for ws in wb.worksheets:
-        if not ws.title.isdigit():
+        if not ws.title.isdigit() or ws.sheet_state != "visible":
             continue
         sum_row = find_quote_sum_row(ws)
         if sum_row:
@@ -2150,10 +2297,13 @@ def build_workbook(input_path: Path, template_path: Path, output_path: Path) -> 
     base_first = wb["1"]
     base_other = wb["2"]
 
-    while "3" in wb.sheetnames:
-        del wb["3"]
+    for sheet_name in list(wb.sheetnames):
+        # 没用到的页不删除，隐藏即可
+        if sheet_name.isdigit() and int(sheet_name) > max(total_pages, 2):
+            wb[sheet_name].sheet_state = "hidden"
     for idx in range(3, total_pages + 1):
-        clone_sheet_layout(wb, base_other, str(idx), summary)
+        if str(idx) not in wb.sheetnames:
+            clone_sheet_layout(wb, base_other, str(idx), summary)
 
     subtotal_rows: dict[int, int] = {}
     for idx, (area, items) in enumerate(groups, start=1):

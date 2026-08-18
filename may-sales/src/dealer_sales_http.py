@@ -29,6 +29,18 @@ DEFAULT_TEMPLATE = Path(os.getenv(
     str(WORK_DIR / "templates" / "2026年5月销售部业绩核对表 - 副本.xlsx")
 ))
 
+# 奢匠销量情况报表：脚本与固定模板（清空 2026 月度数据、保留公式）
+SALES_SCRIPT_PATH = WORK_DIR / "generate_dealer_sales_report.js"
+SALES_TEMPLATE = Path(os.getenv(
+    "SALES_TEMPLATE",
+    str(WORK_DIR / "templates" / "2026年奢匠各经销商销量情况_模板.xlsx")
+))
+# 销量累积表（2026 月度数据，每月递增，持久化在 data/sales_state）
+SALES_ACCUMULATOR = Path(os.getenv(
+    "SALES_ACCUMULATOR",
+    str(WORK_DIR.parent / "data" / "sales_state" / "销量累计_2026.xlsx")
+))
+
 # 输出目录；默认在项目 data/output_may_sales，Docker 中通过环境变量覆盖为 /app/output_may_sales
 OUTPUT_DIR = Path(os.getenv("OUTPUT_DIR", str(WORK_DIR.parent / "data" / "output_may_sales")))
 
@@ -47,7 +59,7 @@ def _detect_file_type(filename: str) -> str:
         return 'zhcx'
     if '联思' in name:
         return 'liansi'
-    if '奢匠' in name or '下单统计' in name:
+    if '奢匠' in name or '下单统计' in name or '线下' in name:
         return 'shejiang'
     if '核对表' in name or '待核对' in name or '模板' in name:
         return 'template'
@@ -122,6 +134,42 @@ def run_may_sales(zhcx_path: str, liansi_path: str, shejiang_path: str, template
         "stdout": result.stdout,
         "stderr": result.stderr,
     }
+
+
+def run_dealer_sales(shejiang_path: str, liansi_path: str, zhcx_path: str, month: str, output_dir: str) -> dict:
+    """调用 generate_dealer_sales_report.js 生成 汇总表_提取结果 + 奢匠各经销商销量情况"""
+    if not SALES_SCRIPT_PATH.exists():
+        return {"success": False, "error": f"找不到脚本: {SALES_SCRIPT_PATH}"}
+    if not SALES_TEMPLATE.exists():
+        return {"success": False, "error": f"销量情况模板不存在: {SALES_TEMPLATE}"}
+    if not SALES_ACCUMULATOR.exists():
+        return {"success": False, "error": f"销量累积表不存在: {SALES_ACCUMULATOR}"}
+
+    cmd = [NODE_EXE, str(SALES_SCRIPT_PATH), str(month), shejiang_path, liansi_path, zhcx_path,
+           str(SALES_TEMPLATE), output_dir, str(SALES_ACCUMULATOR)]
+    logger.info("调用 Node.js(销量情况): %s", " ".join(cmd))
+    try:
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=300, cwd=str(WORK_DIR),
+        )
+    except subprocess.TimeoutExpired:
+        return {"success": False, "error": "销量情况报表处理超时（超过 5 分钟）"}
+    except Exception as e:
+        logger.exception("调用 Node.js(销量情况) 异常")
+        return {"success": False, "error": f"调用 Node.js(销量情况) 异常: {e}"}
+
+    if result.returncode != 0:
+        logger.error("销量情况 Node.js 执行失败: code=%d, stderr=%s", result.returncode, result.stderr)
+        return {"success": False, "error": f"销量情况报表生成失败 (code={result.returncode}): {result.stderr[-500:]}"}
+
+    outputs = []
+    for name in (f"汇总表_提取结果_{month}月.xlsx", f"2026年奢匠各经销商销量情况（{month}月）.xlsx"):
+        p = os.path.join(output_dir, name)
+        if os.path.exists(p):
+            outputs.append({"path": p, "filename": name})
+    if len(outputs) != 2:
+        return {"success": False, "error": "销量情况输出文件未生成", "stdout": result.stdout, "stderr": result.stderr}
+    return {"success": True, "outputs": outputs, "stdout": result.stdout}
 
 
 def _process_multi(req: dict, work_dir: str) -> dict:
@@ -211,6 +259,27 @@ def _process_multi(req: dict, work_dir: str) -> dict:
             logger.error("读取输出文件内容失败: %s", e)
             result['output_files'] = [{"path": output_path, "filename": output_filename}]
             result['content_warning'] = f"读取输出文件内容失败: {e}"
+
+        # 追加：奢匠各经销商销量情况报表（同一组输入文件 + 固定模板）
+        # 失败不阻断主报表，仅以 warning 形式透传到群
+        sales_result = run_dealer_sales(
+            file_map['shejiang'], file_map['liansi'], file_map['zhcx'], month, str(OUTPUT_DIR),
+        )
+        if sales_result.get('success'):
+            for item in sales_result['outputs']:
+                try:
+                    with open(item['path'], 'rb') as fh:
+                        item['file_content'] = base64.b64encode(fh.read()).decode('utf-8')
+                    result['output_files'].append(item)
+                    logger.info("销量情况输出已编码: %s", item['filename'])
+                except Exception as e:
+                    logger.error("读取销量情况输出失败: %s", e)
+                    result['output_files'].append(item)
+            if sales_result.get('stdout') and '直营店数据按 0 处理' in sales_result['stdout']:
+                result['warning'] = '⚠️ 奢匠明细文件缺少「直营店+电商下单表」Sheet，本月直营店/电商数据未计入销量情况报表'
+        else:
+            logger.error("销量情况报表生成失败: %s", sales_result.get('error'))
+            result['warning'] = f"⚠️ 销量情况报表生成失败：{sales_result.get('error')}（业绩核对表不受影响）"
 
     logger.info("%s月业绩核对处理完成，success=%s", month, result.get('success'))
     return result

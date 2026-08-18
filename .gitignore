@@ -58,5 +58,14 @@ package-lock.json
 # Temporary files
 tmp/
 temp/
+tmp_*/
 *.tmp
 *.bak
+*.bak-*
+*.bak_*
+
+# Local ops snapshots and one-off test dirs
+.ops-backup/
+shadow-test/
+quote-maker/migration-test/
+may-sales/deploy/docker/migration_ab/
