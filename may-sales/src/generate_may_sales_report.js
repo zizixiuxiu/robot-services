@@ -378,7 +378,59 @@ async function main() {
   }
 
   // 合计行：用普通 SUM 公式替换原模板中可能损坏的共享公式
-  const totalRow = targetSheet.getRow(116);
+  // 行号不能再写死（模板名单行数会跟着经销商变化），按「合计」字样定位
+  let totalRowNum = 0;
+  targetSheet.eachRow({ includeEmpty: false }, (row, rowNumber) => {
+    if (String(row.getCell(1).value || '').trim() === '合计') totalRowNum = rowNumber;
+  });
+  if (!totalRowNum) throw new Error('模板中找不到「合计」行，无法确定合计位置');
+
+  // 模板名单没收录的经销商也要出账：插在合计行前面（原来直接丢掉，合计对不上明细）
+  if (unmatched.length > 0) {
+    const styleFrom = targetSheet.getRow(totalRowNum - 1);
+    targetSheet.spliceRows(totalRowNum, 0, ...unmatched.map(() => []));
+    unmatched.forEach((data, i) => {
+      const r = targetSheet.getRow(totalRowNum + i);
+      for (let c = 1; c <= 16; c++) {
+        try {
+          r.getCell(c).style = Object.assign({}, styleFrom.getCell(c).style);
+        } catch (e) { /* 样式抄不过来就只写值 */ }
+      }
+      r.getCell(1).value = null;
+      r.getCell(2).value = null;
+      r.getCell(3).value = data.province;
+      r.getCell(4).value = null;
+      r.getCell(5).value = data.dealer;
+      r.getCell(6).value = round2(data.正单);
+      r.getCell(7).value = round2(data.样品);
+      r.getCell(8).value = round2(data.业绩合计);
+      r.getCell(9).value = round2(data.样品折后金额);
+      r.getCell(10).value = round2(data.隐迹系列销量);
+      if (data.正单 === 0 && data.样品 > 0) r.getCell(11).value = '新商';
+      r.commit && r.commit();
+    });
+    // 插了几行，合计行跟着往下走
+    totalRowNum += unmatched.length;
+    totalRowNum = (function findAgain() {
+      let t = 0;
+      targetSheet.eachRow({ includeEmpty: false }, (row, rowNumber) => {
+        if (String(row.getCell(1).value || '').trim() === '合计') t = rowNumber;
+      });
+      return t || totalRowNum;
+    })();
+    console.log(`已把 ${unmatched.length} 个模板外经销商补在合计行上方（第 ${totalRowNum - unmatched.length} 行起）`);
+  }
+
+  let lastDataRow = totalRowNum - 1;
+  // 名单里有、本月没单的经销商：金额补 0，别留空格（模板已被清空）
+  for (let r = 3; r <= lastDataRow; r++) {
+    const row = targetSheet.getRow(r);
+    for (const c of [6, 7, 8, 9, 10]) {
+      const v = row.getCell(c).value;
+      if (v === null || v === undefined) row.getCell(c).value = 0;
+    }
+  }
+  const totalRow = targetSheet.getRow(totalRowNum);
   const sums = { 6: 0, 7: 0, 9: 0, 10: 0 };
   for (const key of Object.keys(agg)) {
     const data = agg[key];
@@ -394,9 +446,9 @@ async function main() {
     const letter = mainCols[c];
     let formula;
     if (c === 8) {
-      formula = 'F116+G116';
+      formula = `F${totalRowNum}+G${totalRowNum}`;
     } else {
-      formula = `SUM(${letter}3:${letter}115)`;
+      formula = `SUM(${letter}3:${letter}${lastDataRow})`;
     }
     totalRow.getCell(c).value = { formula, result: round2(val) };
   }
@@ -405,9 +457,9 @@ async function main() {
   for (const [col, letter] of Object.entries(checkCols)) {
     let formula;
     if (parseInt(col) === 14) {
-      formula = 'L116+M116';
+      formula = `L${totalRowNum}+M${totalRowNum}`;
     } else {
-      formula = `SUM(${letter}3:${letter}115)`;
+      formula = `SUM(${letter}3:${letter}${lastDataRow})`;
     }
     totalRow.getCell(parseInt(col)).value = { formula, result: 0 };
   }

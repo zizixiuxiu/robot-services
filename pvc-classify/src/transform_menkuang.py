@@ -12,6 +12,7 @@ import shutil
 import re
 import xlrd
 from xlutils.copy import copy
+from keep_rows import is_keep_row, read_row_values, add_excluded, add_kept
 
 
 def extract_date_code(filepath):
@@ -176,6 +177,23 @@ def is_red_row(book, sheet, row_idx):
         return False
 
 
+_KEPT_RED = [0]
+
+
+def should_skip_red_row(book, sheet, row_idx):
+    """标红行是否跳过。封边条等豁免行即使标红也保留（并计数用于日志）。"""
+    if not is_red_row(book, sheet, row_idx):
+        return False
+    sheet_name = getattr(sheet, 'name', '')
+    values = read_row_values(sheet, row_idx)
+    if is_keep_row(values):
+        _KEPT_RED[0] += 1
+        add_kept(sheet_name, values)
+        return False
+    add_excluded(sheet_name, values, '红字标记')
+    return True
+
+
 def read_and_transform(input_path):
     """读取输入文件，转换数据，返回二维列表。支持新旧两种列结构。"""
     date_code = extract_date_code(input_path)
@@ -212,7 +230,7 @@ def read_and_transform(input_path):
     if is_new_format:
         # ===== 新格式：直接逐行转换，不再分组竖板/顶板 =====
         for r in range(1, src_ws.nrows):
-            if is_red_row(book, src_ws, r):
+            if should_skip_red_row(book, src_ws, r):
                 continue
             row_data = [src_ws.cell_value(r, c) for c in range(src_ws.ncols)]
             
@@ -270,7 +288,7 @@ def read_and_transform(input_path):
             col8 = prefix + str(颜色)
             col15 = prefix
             
-            output_rows.append([
+            out_row = [
                 工件名称,
                 大类 if 大类 else '门套',
                 开料长,
@@ -289,12 +307,17 @@ def read_and_transform(input_path):
                 col15,
                 单项备注,
                 特殊要求,
-            ])
+            ]
+            # 透传列（CSV 转换输入才有）：条形码/批次号/材料描述2/原工件名称/分柜号/特殊工艺 原样带到输出
+            if '条形码' in col_map:
+                for extra in ('条形码', '批次号', '材料描述2', '原工件名称', '分柜号', '特殊工艺'):
+                    out_row.append(get(row_data, extra) or '')
+            output_rows.append(out_row)
     else:
         # ===== 旧格式：按生产号分组竖板、顶板 =====
         groups = {}  # 生产号 -> {"竖板": [rows], "顶板": [rows]}
         for r in range(1, src_ws.nrows):
-            if is_red_row(book, src_ws, r):
+            if should_skip_red_row(book, src_ws, r):
                 continue
             row_data = [src_ws.cell_value(r, c) for c in range(src_ws.ncols)]
             pid = get(row_data, '生产号')
@@ -382,6 +405,10 @@ def read_and_transform(input_path):
                     特殊要求,
                 ])
     
+    if _KEPT_RED[0]:
+        print(f'  [Keep] 标红但属豁免行(封边条等)，已保留: {_KEPT_RED[0]} 行')
+        _KEPT_RED[0] = 0
+
     return output_rows
 
 

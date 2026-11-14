@@ -40,7 +40,8 @@ $dockerServices = @(
     @("8006 workshop-order", "D:\Services\robot-services\workshop-order\deploy\docker\docker-compose.yml"),
     @("8007 quote-maker", "D:\Services\robot-services\quote-maker\deploy\docker\docker-compose.yml"),
     @("8008 dealer-report", "D:\Services\robot-services\dealer-report\deploy\docker\docker-compose.yml"),
-    @("8090 simple-ims", "D:\Services\robot-services\simple-ims\deploy\docker\docker-compose.yml"),
+    # 2026-11-11 simple-ims 已弃用（服务器已替代），不再拉起
+    # @("8090 simple-ims", "D:\Services\robot-services\simple-ims\deploy\docker\docker-compose.yml"),
     @("feishu-ws-gateway", "D:\Services\robot-services\feishu-ws-gateway\deploy\docker\docker-compose.yml"),
     @("8009 attendance-summary", "D:\Services\robot-services\attendance-summary\deploy\docker\docker-compose.yml")
 )
@@ -74,7 +75,7 @@ $endpoints = @{
     8007 = "/health"
     8008 = "/health"
     8009 = "/health"
-    8090 = "/health"
+    # 8090 = "/health"   # simple-ims 已弃用，去掉避免空等 5 分钟
 }
 
 for ($attempt = 1; $attempt -le 60; $attempt++) {

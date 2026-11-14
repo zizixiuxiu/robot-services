@@ -1,0 +1,20 @@
+services:
+  homag-frame-csv:
+    build: .
+    container_name: homag-frame-csv-8014
+    restart: unless-stopped
+    ports:
+      - "8014:8014"
+    environment:
+      MAX_UPLOAD_BYTES: "52428800"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8014/health', timeout=3)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"

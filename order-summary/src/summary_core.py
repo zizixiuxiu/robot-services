@@ -4,7 +4,7 @@
 PVC 订单汇总核心逻辑：
 - 读取订单明细 .xls/.xlsx（第 1 行为标题，第 2 行为表头）
 - 按「回传单号 + 类型」分组
-- 数量（明细表第 70 列，即 宽/厚、厚 后的“数量”列）求和；主数量为 0 时回退“单线条”列
+- 数量（明细表中 宽/厚、厚 之后的“数量”列，按列名定位）求和；主数量为 0 时回退“单线条”列
 - 产品列去重后用 '/' 连接；生产单号同样合并，作为「订单明细」表 E 列隐藏保留
 - 隐藏工作表「系统导入数据」（按回传单号一单一行，仅含门扇/门套窗套计划数
   至少一个大于 0 的单号）：生产单号列表、终端客户、门扇计划数（全行累计 单扇+门扇）、
@@ -13,6 +13,8 @@ PVC 订单汇总核心逻辑：
 - 输出带格式的 .xlsx（可见工作表“订单明细”，表头加粗、冻结首行、边框、自动筛选，
   按回传单号交替灰白底色，E 列隐藏；“系统导入数据”工作表整体隐藏）
 """
+import logging
+import re
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 
@@ -23,17 +25,17 @@ from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
 # 数据生成时间固定用东八区（容器内默认 UTC，需显式 +8）
 CN_TZ = timezone(timedelta(hours=8))
 
-# 数量列在原始明细表中的列索引（0 基）：门洞尺寸、宽/厚、厚 之后的“数量”
-QTY_COL_INDEX = 69
+logger = logging.getLogger("order-summary")
 
-# 回退数量列：类型为「线条」的行不填主数量列，数量记在“单线条”列
-QTY_FALLBACK_COL_INDEX = 60
-
-# 隐藏统计列取数位置（0 基）：门扇 / 门套 / 单扇 / 窗套
-DOOR_COL_INDEX = 53      # 门扇
-TAOK_COL_INDEX = 54      # 门套
-SINGLE_DOOR_COL_INDEX = 55  # 单扇
-WINDOW_TAO_COL_INDEX = 56   # 窗套
+# 以下列号只是「按列名找不到时的兜底」，正常路径一律按列名定位：
+# 源头（订单通）导出模板会增删列，列号会整体左右漂移，
+# 例如 2026-10-29 的导出从 85 列缩到 64 列，数量列从第 70 列左移到第 49 列。
+QTY_COL_INDEX = 69           # 兜底：原模板中“厚”后一列“数量”的位置（0 基）
+QTY_FALLBACK_COL_INDEX = 60  # 兜底：原模板中“单线条”列位置（主数量为 0 时回退取它）
+DOOR_COL_INDEX = 53      # 兜底：门扇
+TAOK_COL_INDEX = 54      # 兜底：门套
+SINGLE_DOOR_COL_INDEX = 55  # 兜底：单扇
+WINDOW_TAO_COL_INDEX = 56   # 兜底：窗套
 
 REQUIRED_COLUMNS = ["回传单号", "类型", "产品", "生产单号"]
 
@@ -51,6 +53,80 @@ def _num(series) -> "pd.Series":
     return pd.to_numeric(series, errors="coerce").fillna(0)
 
 
+def _base_name(col) -> str:
+    """列名去掉 pandas 重名后缀（数量 -> 数量，数量.1 -> 数量）"""
+    return re.sub(r"\.\d+$", "", str(col)).strip()
+
+
+def _find_col(df: "pd.DataFrame", name: str):
+    """按列名找列索引（忽略 .1/.2 重名后缀），找不到返回 None"""
+    for i, c in enumerate(df.columns):
+        if _base_name(c) == name:
+            return i
+    return None
+
+
+def _resolve_columns(df: "pd.DataFrame") -> dict:
+    """按列名定位汇总所需的列，兼容源头导出模板的列增删。
+
+    优先级：
+    - 数量列：「厚」列右边紧邻且列名以「数量」开头的列（原模板规律）
+      → 退而求其次取最后一个「数量」列 → 最后才用旧硬编码索引
+    - 单线条 / 门扇 / 门套 / 单扇 / 窗套：按列名精确取，找不到才用旧硬编码索引
+    """
+    n = len(df.columns)
+
+    qty = None
+    thick = _find_col(df, "厚")
+    if thick is not None and thick + 1 < n and _base_name(df.columns[thick + 1]).startswith("数量"):
+        qty = thick + 1
+    if qty is None:
+        candidates = [i for i, c in enumerate(df.columns) if _base_name(c) == "数量"]
+        if candidates:
+            qty = candidates[-1]
+    if qty is None:
+        if n > QTY_COL_INDEX:
+            qty = QTY_COL_INDEX
+        else:
+            raise ValueError(
+                f"文件列数不足（{n} 列），无法定位数量列："
+                "既没有「厚」后一列的「数量」列，也没有独立的「数量」列"
+            )
+
+    fallback = _find_col(df, "单线条")
+    if fallback is None and n > QTY_FALLBACK_COL_INDEX:
+        fallback = QTY_FALLBACK_COL_INDEX
+
+    def pick(name, default):
+        idx = _find_col(df, name)
+        if idx is None and n > default:
+            idx = default
+        return idx
+
+    return {
+        "qty": qty,
+        "fallback": fallback,
+        "door": pick("门扇", DOOR_COL_INDEX),
+        "tao": pick("门套", TAOK_COL_INDEX),
+        "single": pick("单扇", SINGLE_DOOR_COL_INDEX),
+        "window": pick("窗套", WINDOW_TAO_COL_INDEX),
+    }
+
+
+def _col_name(df: "pd.DataFrame", idx) -> str:
+    """列名（含 1 基列号），用于日志排查"""
+    if idx is None or idx >= len(df.columns):
+        return "-"
+    return f"{df.columns[idx]}({idx + 1})"
+
+
+def _col_values(df: "pd.DataFrame", idx) -> "pd.Series":
+    """取某索引列并转数值，索引无效时返回全 0（保证统计不炸）"""
+    if idx is None or idx >= len(df.columns):
+        return pd.Series([0] * len(df), index=df.index)
+    return _num(df[df.columns[idx]])
+
+
 def _unique_join(series, sep: str) -> str:
     """去重后连接（忽略空值，保持出现顺序）"""
     vals = []
@@ -63,15 +139,16 @@ def _unique_join(series, sep: str) -> str:
     return sep.join(vals)
 
 
-def _build_order_stats(df: "pd.DataFrame") -> dict:
+def _build_order_stats(df: "pd.DataFrame", cols: dict = None) -> dict:
     """按回传单号统计车间扫码系统需要的数据。
 
     返回 {回传单号: {...}}，仅包含门扇计划数或门套窗套计划数至少一个大于 0 的单号。
     """
-    door = _num(df[df.columns[DOOR_COL_INDEX]])          # 门扇
-    tao = _num(df[df.columns[TAOK_COL_INDEX]])           # 门套
-    single = _num(df[df.columns[SINGLE_DOOR_COL_INDEX]])  # 单扇
-    window = _num(df[df.columns[WINDOW_TAO_COL_INDEX]])   # 窗套
+    cols = cols or _resolve_columns(df)
+    door = _col_values(df, cols["door"])      # 门扇
+    tao = _col_values(df, cols["tao"])        # 门套
+    single = _col_values(df, cols["single"])  # 单扇
+    window = _col_values(df, cols["window"])  # 窗套
 
     door_qty = single + door          # 每行门扇计划数量 = 单扇 + 门扇
     taoc_qty = tao + window           # 每行门套窗套数量 = 门套 + 窗套
@@ -194,16 +271,22 @@ def summarize_order(input_path: str, output_dir: str) -> dict:
     missing = [c for c in REQUIRED_COLUMNS if c not in df.columns]
     if missing:
         raise ValueError(f"文件缺少必需列: {', '.join(missing)}")
-    if len(df.columns) <= QTY_COL_INDEX:
-        raise ValueError(f"文件列数不足（{len(df.columns)} 列），无法定位数量列（第 {QTY_COL_INDEX + 1} 列）")
-
-    qty_col = df.columns[QTY_COL_INDEX]
+    # 按列名定位（源头模板列数会变，不能写死列号）
+    cols = _resolve_columns(df)
+    qty_col = df.columns[cols["qty"]]
+    logger.info(
+        "列定位: 共 %d 列, 数量=%s(%d), 单线条=%s, 门扇=%s, 门套=%s, 单扇=%s, 窗套=%s",
+        len(df.columns), qty_col, cols["qty"] + 1,
+        _col_name(df, cols["fallback"]), _col_name(df, cols["door"]),
+        _col_name(df, cols["tao"]), _col_name(df, cols["single"]),
+        _col_name(df, cols["window"]),
+    )
 
     sub = df[REQUIRED_COLUMNS].copy()
     qty = pd.to_numeric(df[qty_col], errors="coerce").fillna(0)
     # 主数量列为 0 的行（如「线条」类型）回退取“单线条”列的数量
-    if len(df.columns) > QTY_FALLBACK_COL_INDEX:
-        fallback = pd.to_numeric(df[df.columns[QTY_FALLBACK_COL_INDEX]], errors="coerce").fillna(0)
+    if cols["fallback"] is not None:
+        fallback = _num(df[df.columns[cols["fallback"]]])
         qty = qty.where(qty != 0, fallback)
     sub["数量"] = qty
 
@@ -216,7 +299,7 @@ def summarize_order(input_path: str, output_dir: str) -> dict:
     out = out[["回传单号", "类型", "数量", "产品", "生产单号"]]
 
     # 隐藏工作表「系统导入数据」：按回传单号一单一行
-    stats = _build_order_stats(df)
+    stats = _build_order_stats(df, cols)
     gen_time = datetime.now(CN_TZ).strftime("%Y-%m-%d %H:%M:%S")
     import_rows = []
     for order_no, vals in stats.items():

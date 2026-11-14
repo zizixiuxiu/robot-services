@@ -1002,7 +1002,18 @@ def generate_factory_version(source_path, output_path, order_date=None):
         ws = wb.get_sheet(sheet_idx)
         is_number_sheet = sheet_name in [str(i) for i in range(1, 100)]
         is_wu_sheet = '五' in sheet_name or '五金' in sheet_name
-        
+
+        # 订单金额汇总表：整表隐藏（工厂版不需要价格总表，否则公式引用被清空的价格列会显示空白/公式）
+        if sheet_name == '汇总':
+            is_price_summary = any(
+                '金额' in str(sheet.cell(r, c).value) or '总表' in str(sheet.cell(r, c).value)
+                for r in range(min(5, sheet.nrows))
+                for c in range(sheet.ncols)
+            )
+            if is_price_summary:
+                ws.visibility = 1
+                continue
+
         # 找到最后有内容的行，避免尾部空白行保留格式导致空白页
         last_content_row = -1
         for r in range(sheet.nrows):
@@ -1223,6 +1234,213 @@ def generate_factory_version(source_path, output_path, order_date=None):
                     ws.row(row).height = 0
                     ws.row(row).hidden = True
     
+    wb.save(output_path)
+    return output_path
+
+
+def generate_factory_version_xlsx(source_path, output_path, order_date=None):
+    """生成 xlsx 工厂版：保留原 xlsx 格式，仅隐藏价格行列、替换下单日期。
+
+    用于源文件真实格式为 .xlsx 的情况；.xls 源文件仍走 generate_factory_version。
+    兼容扩展名与真实格式不符（如 xlsx 改成 .xls）的情况。
+    """
+    import openpyxl
+    from openpyxl.utils import get_column_letter
+    from factory_common.bom_utils import as_xlsx_path
+
+    wb = openpyxl.load_workbook(as_xlsx_path(source_path))
+
+    def _cell_val(ws, r, c):
+        # openpyxl 行/列从 1 开始；合并单元格取左上角值
+        val = ws.cell(row=r, column=c).value
+        if val is not None and val != '':
+            return val
+        for merged in ws.merged_cells.ranges:
+            if (merged.min_row <= r <= merged.max_row and
+                    merged.min_col <= c <= merged.max_col):
+                top = ws.cell(row=merged.min_row, column=merged.min_col).value
+                return top if top not in (None, '') else None
+        return None
+
+    def _row_text(ws, r, max_col=None):
+        vals = []
+        max_col = max_col or ws.max_column
+        for c in range(1, max_col + 1):
+            v = _cell_val(ws, r, c)
+            if v is not None and str(v).strip():
+                vals.append(str(v).strip())
+        return ' '.join(vals)
+
+    def _is_process_area(ws, r):
+        text = _row_text(ws, r)
+        keywords = ['柜体加工', '门板加工', '电子锯', '雕刻', '打磨', '喷胶',
+                    '小料开料', '封边', '排孔', '异形', '开槽', '试装', '包装',
+                    '入库', '发货', '件数', '吸塑', '包覆', '开榫', '门芯加工',
+                    '门芯吸塑', '拼装', '打包', '设计', '开料', '制作', '贴皮',
+                    '木磨', '灰工', '一次油磨', '二次油磨', '底漆', '擦色', '面漆']
+        return any(k in text for k in keywords)
+
+    def _is_zhibiaoren(ws, r):
+        text = _row_text(ws, r)
+        if '制表人' not in text or '审单' not in text:
+            return False
+        for rr in range(max(1, r - 8), r):
+            if _is_process_area(ws, rr):
+                return True
+        return False
+
+    def _is_blank_tuwen_box(ws, r):
+        text = _row_text(ws, r)
+        return '图文说明:' in text and ('下单日期' in text or '交货期' in text or '交货日期' in text)
+
+    def _should_hide_row_digital(ws, r):
+        text = _row_text(ws, r)
+        if not text:
+            return False
+        if '板材' in text and any(re.search(r'\d+\.?\d*', v) for v in text.split()):
+            return True
+        if '五金' in text and any(re.search(r'\d+\.?\d*', v) for v in text.split()):
+            return True
+        if '此单共' in text or '合计金额' in text:
+            return True
+        if '经销商确认' in text:
+            return True
+        if '定金' in text and any(re.search(r'\d+\.?\d*', v) for v in text.split()):
+            return True
+        return False
+
+    def _should_hide_row_hardware(ws, r):
+        text = _row_text(ws, r)
+        return '此单共' in text or '合计金额' in text or '优惠' in text or '需支付' in text
+
+    def _should_hide_row_waigou(ws, r):
+        text = _row_text(ws, r)
+        if '数量总计' in text:
+            return False
+        non_empty = [v for v in text.split() if v.strip()]
+        if any(k in text for k in ['合计', '汇总', '总价格', '金额']) and len(non_empty) <= 4:
+            return True
+        return False
+
+    def _hide_cols(ws, cols):
+        for col in cols:
+            if col < ws.max_column:
+                ws.column_dimensions[get_column_letter(col + 1)].hidden = True
+
+    def _hide_row(ws, r):
+        ws.row_dimensions[r].hidden = True
+        ws.row_dimensions[r].height = 0
+
+    def _replace_order_date(ws):
+        if not order_date:
+            return
+        for r in range(1, ws.max_row + 1):
+            for c in range(1, ws.max_column + 1):
+                val = ws.cell(row=r, column=c).value
+                if not val or not isinstance(val, str):
+                    continue
+                if '下单日期' not in val and '接单日期' not in val:
+                    continue
+                # 向右找 1-5 列
+                for dc in range(1, 6):
+                    target = ws.cell(row=r, column=c + dc)
+                    if target.value and re.match(r'^\d{1,4}[\.\-]\d{1,2}([\.\-]\d{1,2})?$', str(target.value)):
+                        target.value = order_date
+                        break
+                else:
+                    # 向下找 1-2 行
+                    for dr in range(1, 3):
+                        target = ws.cell(row=r + dr, column=c)
+                        if target.value and re.match(r'^\d{1,4}[\.\-]\d{1,2}([\.\-]\d{1,2})?$', str(target.value)):
+                            target.value = order_date
+                            break
+
+    for ws in wb.worksheets:
+        name = ws.title
+        is_number_sheet = name.strip().isdigit()
+        is_wu_sheet = '五' in name or '五金' in name
+        is_waigou = '外购表' in name or '特殊产品表' in name
+        is_shimu = name == '实木'
+
+        # 订单金额总表整表隐藏
+        if name == '汇总':
+            is_price_summary = False
+            for r in range(1, min(6, ws.max_row + 1)):
+                for c in range(1, ws.max_column + 1):
+                    v = ws.cell(row=r, column=c).value
+                    if v and ('金额' in str(v) or '总表' in str(v)):
+                        is_price_summary = True
+                        break
+                if is_price_summary:
+                    break
+            if is_price_summary:
+                ws.sheet_state = 'hidden'
+                continue
+
+        # 隐藏价格列
+        if is_number_sheet:
+            _hide_cols(ws, {7, 8, 9, 10})
+        elif is_wu_sheet:
+            _hide_cols(ws, {10, 16, 17})
+        elif is_waigou:
+            hidden = {10, 11, 12}
+            for r in range(1, min(11, ws.max_row + 1)):
+                for c in range(1, ws.max_column + 1):
+                    v = ws.cell(row=r, column=c).value
+                    if v and '平方' in str(v):
+                        hidden.add(9)
+                        break
+                if 9 in hidden:
+                    break
+            _hide_cols(ws, hidden)
+        elif is_shimu:
+            _hide_cols(ws, {10, 11})
+
+        # 隐藏价格行
+        if is_number_sheet or is_shimu:
+            for r in range(1, ws.max_row + 1):
+                if is_shimu and ws.row_dimensions[r].hidden:
+                    continue
+                if _is_process_area(ws, r) or _is_zhibiaoren(ws, r) or _is_blank_tuwen_box(ws, r):
+                    ws.row_dimensions[r].hidden = False
+                    continue
+                if is_shimu:
+                    text = _row_text(ws, r)
+                    if any(k in text for k in ['下单日期', '预计交货日期', '预计交货期', '生产单号']):
+                        ws.row_dimensions[r].hidden = False
+                        continue
+                if _should_hide_row_digital(ws, r):
+                    _hide_row(ws, r)
+        elif is_wu_sheet:
+            total_qty_row = None
+            for r in range(1, ws.max_row + 1):
+                text = _row_text(ws, r)
+                if '数量总计' in text:
+                    total_qty_row = r
+                    break
+            for r in range(1, ws.max_row + 1):
+                if _should_hide_row_hardware(ws, r):
+                    _hide_row(ws, r)
+            if total_qty_row is not None:
+                for r in range(total_qty_row + 1, ws.max_row + 1):
+                    text = _row_text(ws, r)
+                    if not text:
+                        _hide_row(ws, r)
+                    elif _should_hide_row_hardware(ws, r):
+                        continue
+                    else:
+                        break
+        elif is_waigou:
+            for r in range(1, ws.max_row + 1):
+                text = _row_text(ws, r)
+                if '数量总计' in text:
+                    ws.row_dimensions[r].hidden = False
+                    continue
+                if _should_hide_row_waigou(ws, r):
+                    _hide_row(ws, r)
+
+        _replace_order_date(ws)
+
     wb.save(output_path)
     return output_path
 

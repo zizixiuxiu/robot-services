@@ -23,6 +23,14 @@ def _get_merged_value(sheet, row_idx, col_idx):
     return None
 
 
+def _is_vertical_merge_continuation(sheet, row_idx, col_idx):
+    """True if this cell is below the top of a vertical merge (not a new row)."""
+    for rlo, rhi, clo, chi in sheet.merged_cells:
+        if clo <= col_idx < chi and rlo <= row_idx < rhi:
+            return row_idx > rlo
+    return False
+
+
 def _find_value_by_label(sheet, label, max_offset=3, exclude_labels=None):
     """Find a value in sheet by searching for a label cell.
     
@@ -153,9 +161,21 @@ def extract_header_info(source_file):
     }
 
 
+_HEADER_NAMES = {
+    '五金名称', '序号', '品牌', '品牌：', '经销商姓名', '经销商地址',
+    '制表人', '下单日期', '定制家居五金清单',
+}
+_HEADER_UNITS = {
+    '接单日期', '终端客户', '区域', '订单编号', '单位', '数量', '经销商姓名',
+}
+
+
 def _is_header_row(name):
-    """Check if a row is a header row."""
-    return str(name).strip() in ['五金名称', '序号']
+    """Check if a row is a title/header row, not a hardware item."""
+    name_str = str(name).strip()
+    if name_str in _HEADER_NAMES:
+        return True
+    return name_str.rstrip('：:') in _HEADER_NAMES
 
 
 def _is_summary_or_meta_row(name):
@@ -170,6 +190,17 @@ def _extract_data_from_hardware_sheet(sheet):
     items = []
     
     for row_idx in range(sheet.nrows):
+        # 前 5 行是标题/品牌/列头；空模板表头「品牌：」合并进 B 列后，
+        # 数量列若是数字（如 23）会被当成五金明细。
+        if row_idx < 5:
+            continue
+
+        # 名称/数量纵向合并时，Excel 只在首行存值；后续空行若填回合并值会当成第二条明细。
+        if _is_vertical_merge_continuation(sheet, row_idx, 1):
+            continue
+        if _is_vertical_merge_continuation(sheet, row_idx, 7):
+            continue
+
         name = _get_merged_value(sheet, row_idx, 1)
         if name is None:
             continue
@@ -190,6 +221,8 @@ def _extract_data_from_hardware_sheet(sheet):
             continue
         
         unit = _get_merged_value(sheet, row_idx, 9)
+        if unit is not None and str(unit).strip() in _HEADER_UNITS:
+            continue
         length = _get_merged_value(sheet, row_idx, 11)
         width = _get_merged_value(sheet, row_idx, 14)
         remark = _get_merged_value(sheet, row_idx, 18)
@@ -225,6 +258,115 @@ def extract_hardware_data(source_file):
     return all_items
 
 
+def _sheet_is_hidden(sheet):
+    return getattr(sheet, 'visibility', 0) != 0
+
+
+def detect_hidden_source_sheets(source_file):
+    """Hidden 五金 sheets that actually have extractable items."""
+    book = xlrd.open_workbook(source_file, formatting_info=True)
+    included = []
+    for name in book.sheet_names():
+        if '五' not in name:
+            continue
+        sheet = book.sheet_by_name(name)
+        if not _sheet_is_hidden(sheet):
+            continue
+        if _extract_data_from_hardware_sheet(sheet):
+            included.append(name)
+    return included
+
+
+def _join_sheet_names(names):
+    """Consecutive numbered sheets with the same suffix: 11五金～27五金."""
+    parts = []
+    i = 0
+    while i < len(names):
+        m = re.match(r'^(\d+)(.*)$', names[i])
+        if not m:
+            parts.append(names[i])
+            i += 1
+            continue
+        start_num, suffix = int(m.group(1)), m.group(2)
+        j = i
+        while j + 1 < len(names):
+            m2 = re.match(r'^(\d+)(.*)$', names[j + 1])
+            if not m2 or m2.group(2) != suffix:
+                break
+            if int(m2.group(1)) != start_num + (j + 1 - i):
+                break
+            j += 1
+        if j > i:
+            parts.append(f'{names[i]}～{names[j]}')
+        else:
+            parts.append(names[i])
+        i = j + 1
+    return '、'.join(parts)
+
+
+def format_hidden_sheet_warning(included, skipped=None):
+    """Only remind when hidden sheets have real items, not empty templates."""
+    if not included:
+        return None
+    return (
+        f"⚠️ 提醒：隐藏表【{_join_sheet_names(included)}】有内容并已纳入五金汇总，请核对。"
+    )
+
+
+def _sheet_quantity_total(sheet):
+    """Read the sheet's own 数量总计 (quantity column, fallback to the right of the label)."""
+    for row_idx in range(sheet.nrows):
+        for col_idx in range(min(sheet.ncols, 10)):
+            val = _get_merged_value(sheet, row_idx, col_idx)
+            if val is None or '数量总计' not in str(val).replace(' ', ''):
+                continue
+            for qty_col in [7, *range(col_idx + 1, min(col_idx + 8, sheet.ncols))]:
+                if qty_col >= sheet.ncols:
+                    continue
+                qty = _get_merged_value(sheet, row_idx, qty_col)
+                try:
+                    if qty is not None and str(qty).strip() != '':
+                        return float(qty)
+                except (ValueError, TypeError):
+                    continue
+            return None
+    return None
+
+
+def check_hardware_quantity_totals(source_file):
+    """Compare extracted qty per 五金 sheet against that sheet's 数量总计."""
+    book = xlrd.open_workbook(source_file, formatting_info=True)
+    mismatches = []
+    for name in book.sheet_names():
+        if '五' not in name:
+            continue
+        sheet = book.sheet_by_name(name)
+        labeled = _sheet_quantity_total(sheet)
+        if labeled is None:
+            continue
+        extracted = sum(i['quantity'] for i in _extract_data_from_hardware_sheet(sheet))
+        if abs(extracted - labeled) > 0.01:
+            mismatches.append({
+                'sheet': name,
+                'extracted': extracted,
+                'labeled': labeled,
+            })
+    return mismatches
+
+
+def format_quantity_mismatch_warning(mismatches):
+    if not mismatches:
+        return None
+    parts = [
+        f"{m['sheet']} 抽出{m['extracted']:g} / 表内{m['labeled']:g}"
+        for m in mismatches
+    ]
+    return (
+        f"⚠️ 数量核对失败：【{'；'.join(parts)}】，"
+        f"抽出合计与表内「数量总计」不一致，请核对后再下单。"
+    )
+
+
 def _extract_special_products(source_file):
     """Extract data from 特殊产品表 and 外购表 sheets."""
     book = xlrd.open_workbook(source_file, formatting_info=True)
@@ -248,6 +390,10 @@ def _extract_special_products(source_file):
         
         for row_idx in range(sheet.nrows):
             if row_idx < 5:
+                continue
+            if _is_vertical_merge_continuation(sheet, row_idx, 1):
+                continue
+            if _is_vertical_merge_continuation(sheet, row_idx, 6):
                 continue
             
             name = _get_merged_value(sheet, row_idx, 1)

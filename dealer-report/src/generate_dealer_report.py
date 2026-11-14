@@ -17,6 +17,8 @@ import numpy as np
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, Border, Side, PatternFill
 import urllib.request
+
+import ai_client
 import os
 import json
 
@@ -522,35 +524,8 @@ def _local_analysis_json(analysis_data):
 
 
 def call_ai_analysis(prompt: str) -> str:
-    """调用 AI 进行数据分析，未配置 API 时返回空字符串"""
-    api_key = os.getenv('AI_API_KEY')
-    base_url = os.getenv('AI_BASE_URL', 'https://api.deepseek.com/v1')
-    model = os.getenv('AI_MODEL', 'deepseek-v4-flash')
-
-    if not api_key:
-        return ''
-
-    try:
-        body = json.dumps({
-            'model': model,
-            'messages': [{'role': 'user', 'content': prompt}],
-            'temperature': 0.3,
-            'max_tokens': 2000,
-        }, ensure_ascii=False).encode('utf-8')
-        req = urllib.request.Request(
-            f'{base_url}/chat/completions',
-            data=body,
-            headers={
-                'Content-Type': 'application/json; charset=utf-8',
-                'Authorization': f'Bearer {api_key}',
-            },
-        )
-        with urllib.request.urlopen(req, timeout=120) as resp:
-            result = json.loads(resp.read().decode('utf-8'))
-        return result['choices'][0]['message']['content']
-    except Exception as e:
-        print(f'AI 分析调用失败: {e}')
-        return ''
+    """调用大模型做数据分析（provider/key/model 见 ai-config 配置），失败返回空字符串。"""
+    return ai_client.chat(prompt, temperature=0.3, max_tokens=2000)
 
 
 def _safe_json_loads(text):

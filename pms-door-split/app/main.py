@@ -14,9 +14,10 @@ from fastapi.responses import HTMLResponse, Response
 
 from app.converter import (
     ConversionError,
-    EXCLUDED_DOOR_MODELS,
-    EXCLUDED_NAME_KEYWORDS,
+    EXCLUDED_THICKNESSES,
     convert_excel_to_csv,
+    get_excluded_keywords,
+    get_excluded_models,
 )
 
 
@@ -71,9 +72,12 @@ def build_summary_md(stats) -> str:
     excluded_lines = "\n".join(f"• {d}" for d in stats.excluded_details) or "无"
     blank_count = len(stats.blank_thickness_orders)
     blank_lines = "\n".join(f"• {d}" for d in stats.blank_thickness_orders) or "无"
+    excluded_models = get_excluded_models()
+    excluded_keywords = get_excluded_keywords()
     rule_text = (
-        f"共 {len(EXCLUDED_DOOR_MODELS)} 个型号"
-        + (f" + 关键词「{'、'.join(EXCLUDED_NAME_KEYWORDS)}」" if EXCLUDED_NAME_KEYWORDS else "")
+        f"共 {len(excluded_models)} 个型号"
+        + (f" + 关键词「{'、'.join(excluded_keywords)}」" if excluded_keywords else "")
+        + (f" + 厚度「{'、'.join(f'{t}mm' for t in sorted(EXCLUDED_THICKNESSES, key=float))}」" if EXCLUDED_THICKNESSES else "")
     )
 
     summary_md = (
@@ -86,8 +90,8 @@ def build_summary_md(stats) -> str:
         f"• 正常行：{stats.source_rows - stats.split_source_rows} 条 → 输出 {normal} 行\n"
         f"• 拆分行：{stats.split_source_rows} 条 → 输出 {split} 行\n"
         f"• 校验：{normal} + {split} = {stats.output_rows} {'✅' if normal + split == stats.output_rows else '❌'}\n\n"
-        f"🚫 **本次剔除门型：{excluded_count} 行（未进入生成文件）**\n{excluded_lines}\n\n"
-        f"📑 **当前剔除门型表（{rule_text}，命中即不生成）**\n{'、'.join(EXCLUDED_DOOR_MODELS)}\n\n"
+        f"🚫 **本次剔除：{excluded_count} 行（未进入生成文件）**\n{excluded_lines}\n\n"
+        f"📑 **当前剔除规则（{rule_text}，命中即不生成）**\n{'、'.join(excluded_models)}\n\n"
         f"⚠️ **工艺路线未写明厚度：{blank_count} 行（材料描述保留原值，请人工确认）**\n{blank_lines}\n\n"
         f"📋 **拆分明细**\n{split_lines}"
     )

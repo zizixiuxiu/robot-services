@@ -58,6 +58,27 @@ package-lock.json
 # Temporary files
 tmp/
 temp/
+tmp_*
+
+# 改前备份 / 回滚副本：历史交给 git，不再入库
+*.bak
+*.bak-*
+*.bak2-*
+*.rollback-*
+*.before-*
+
+# 本地会话缓存
+.chat_history.json
+
+# 运行产出的报告（含客户单号）
+reports/
+
+# 平台结构镜像：服务器侧已在 robot-platform 仓库，此处不重复
+pvc-classify/platform/
+
+# 含真实 API key 的配置，改为外置
+ai-config/config/ai_config.json
+
 tmp_*/
 *.tmp
 *.bak

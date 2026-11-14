@@ -7,6 +7,8 @@ services:
       - "8013:8013"
     environment:
       MAX_UPLOAD_BYTES: "52428800"
+    volumes:
+      - ../door-skin-converter/data:/app/data:ro
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8013/health', timeout=3)"]
       interval: 30s

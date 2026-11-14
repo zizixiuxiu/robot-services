@@ -1,0 +1,31 @@
+name: ai-config
+
+services:
+  ai-config:
+    image: python:3.13-slim
+    container_name: ai-config-8020
+    working_dir: /app
+    # 纯标准库，直接挂源码跑，不需要 build
+    command: ["python", "/app/src/ai_config_server.py"]
+    ports:
+      - "8020:8020"
+    volumes:
+      - ../../src:/app/src:ro
+      - ../../config:/data
+    environment:
+      - PYTHONUNBUFFERED=1
+      - AI_CONFIG_FILE=/data/ai_config.json
+      # 不设则写接口对内网开放；要锁就填一个随机串
+      - AI_CONFIG_TOKEN=${AI_CONFIG_TOKEN:-}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8020/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"

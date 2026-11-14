@@ -31,7 +31,7 @@ import uvicorn
 from openpyxl import load_workbook
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from generate_attendance import generate
+from generate_attendance import generate, InputError
 from workshop_attendance import transform_attendance
 
 WORK_DIR = Path(os.path.dirname(os.path.abspath(__file__)))
@@ -140,6 +140,9 @@ async def generate_attendance(
 
         try:
             mode, paths = _generate_auto(input_path, output_dir)
+        except InputError as e:
+            logger.warning("输入文件不合法: %s", e)
+            raise HTTPException(400, detail=str(e))
         except Exception as e:
             logger.exception("生成失败")
             raise HTTPException(500, detail=f"生成失败: {str(e)}")
@@ -213,6 +216,9 @@ async def process_attendance(req: ProcessRequest):
         }
     except HTTPException:
         raise
+    except InputError as e:
+        logger.warning("输入文件不合法: %s", e)
+        raise HTTPException(400, detail=str(e))
     except Exception as e:
         logger.exception("处理失败")
         raise HTTPException(500, detail=f"生成失败: {str(e)}")
@@ -250,6 +256,9 @@ async def generate_attendance_local(
 
     try:
         mode, paths = _generate_auto(Path(input_path), task_dir)
+    except InputError as e:
+        logger.warning("输入文件不合法: %s", e)
+        raise HTTPException(400, detail=str(e))
     except Exception as e:
         logger.exception("生成失败")
         raise HTTPException(500, detail=f"生成失败: {str(e)}")

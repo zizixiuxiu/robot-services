@@ -495,14 +495,24 @@ def items_from_sheet(
         row = row_values_with_merges(sheet, row_idx, lookup)
         if not row[3]:
             continue
-        # 无材质行默认进五金，但"门洞"这类特殊行要进正单
-        if not str(row[8]).strip() and "门洞" not in str(row[3]):
+        # 宽、厚同时为空默认进五金，但"门洞"/"洞口尺寸"这类特殊行要进正单
+        if (
+            not has_value(clean_number(row[5]))
+            and not has_value(clean_number(row[6]))
+            and "门洞" not in str(row[3])
+            and "洞口" not in str(row[3])
+        ):
             continue
         row_order_no = inferred_orders.get(row_idx) or normalized_order_no(row[1])
         if not row_order_no:
             continue
         if order_no is not None and row_order_no != order_no:
             continue
+        # "洞口尺寸"/"门洞"等特殊说明行若没有自己的颜色（不在颜色合并块内），
+        # 跟随上一条板件的颜色分组，避免被单独拆成一页
+        row_color = str(row[12]).strip()
+        if not row_color and items and ("门洞" in str(row[3]) or "洞口" in str(row[3])):
+            row_color = items[-1].color
         items.append(
             Item(
                 order_no=row_order_no,
@@ -514,7 +524,7 @@ def items_from_sheet(
                 qty=clean_number(row[7]),
                 material=str(row[8]).strip(),
                 veneer=str(row[11]).strip() if 11 < len(row) and row[11] else "",
-                color=str(row[12]).strip(),
+                color=row_color,
                 remark=str(row[13]).strip(),
                 src_area_value=clean_number(row[14]),
                 meter=clean_number(row[15]),
@@ -552,7 +562,8 @@ def hardware_items_from_sheet(
         name = str(row[3]).strip()
         if not order_no or not name:
             continue
-        if str(row[8]).strip():
+        # 宽、厚同时为空才识别为五金件；有宽或厚的是板件，进正单
+        if has_value(clean_number(row[5])) or has_value(clean_number(row[6])):
             continue
         # "洞口尺寸" etc. are not hardware; skip them. "门洞"也不是五金（应进正单）
         if "洞口" in name or "门洞" in name:
@@ -683,31 +694,36 @@ def group_by_area(items: list[Item], exclude_areas: set[str] | None = None) -> l
 
 
 def group_by_color(items: list[Item]) -> list[tuple[str, list[Item]]]:
-    """按颜色分表，分页优先级：子订单编号 > 区域。
+    """分页规则：子订单编号 > 区域（颜色不参与拆页）。
 
-    - 订单编号带 -1/-2/-3 子单号的：按（子单号, 颜色）分页，一个编号一页，
-      同一编号下不同区域合并在同一页；
-    - 订单编号没有子单号的：按（颜色, 区域）分页，同一颜色同一区域一页，
-      同一颜色不同区域拆分为独立 sheet。
+    - 订单编号带 -1/-2/-3 子单号的：一个编号一页，同一编号下不同区域/颜色合并；
+    - 订单编号没有子单号的：一个区域一页，同一区域内颜色不完全相同的板件
+      也合并在同一页（如 4082 入户玄关柜：面层板子颜色多一段"水线叉色"不拆页）。
     """
     groups: list[tuple[str, list[Item]]] = []
-    grouped: dict[tuple[str, str, str], list[Item]] = {}
-    keys: list[tuple[str, str, str]] = []
+    grouped: dict[tuple[str, str], list[Item]] = {}
+    keys: list[tuple[str, str]] = []
     for item in items:
-        color = item.color or "未填颜色"
         order_no = item.order_no or ""
         has_sub = bool(order_no) and base_order_no(order_no) != order_no
-        if has_sub:
-            key = (order_no, color, "")
-        else:
-            key = ("", color, item.area or "")
+        key = (order_no, "") if has_sub else ("", item.area or "")
         if key not in grouped:
             grouped[key] = []
             keys.append(key)
         grouped[key].append(item)
-    for order_no, color, area in keys:
+    for order_no, area in keys:
+        group_items = grouped[(order_no, area)]
+        # 页内按颜色聚类：相同颜色的行保持 BOM 相对顺序排在一起，
+        # 颜色块按首次出现顺序排列（避免同色被拆成不连续的两段）
+        color_order: dict[str, int] = {}
+        for i in group_items:
+            c = i.color or ""
+            if c not in color_order:
+                color_order[c] = len(color_order)
+        group_items.sort(key=lambda i: color_order[i.color or ""])
+        color = next((i.color for i in group_items if i.color), "")
         label = " ".join(part for part in (order_no, color, area) if part)
-        groups.append((label, grouped[(order_no, color, area)]))
+        groups.append((label, group_items))
     return groups
 
 
@@ -1009,7 +1025,9 @@ def is_arc_panel(item: Item) -> bool:
 
 def quote_color_text(item: Item, first_color_on_sheet: bool = False) -> str:
     color = item.color or ""
-    if is_cross_color(item):
+    if is_cross_color(item) and "B21-S" in color:
+        # 固定文案仅适用于 B21-S 白橡山纹木皮的叉色单；其他含「叉色」字样的
+        # 颜色（如 槽内叉色实色漆Y07-S燕尾灰）按 BOM 原色输出
         return "见图叉色/B21-S白橡山纹木皮，混拼（山雾云橡S）（哑光）半透开放漆-水性漆叉纯黑（哑光）-水性漆"
     if "B21-S" in color:
         text = "B21-S白橡山纹木皮，混拼（山雾云橡S）（哑光）半透开放漆-水性漆"
@@ -1326,10 +1344,14 @@ def input_quote_total_formula(row: int, item: Item) -> Any:
 
 
 def apply_input_quote_pricing(ws: Worksheet, row: int, item: Item) -> None:
+    # 「洞口尺寸」是纯尺寸说明行（无数量），不挂单价/小计/工分公式，保持空白
+    if "洞口" in item.name and not has_value(item.qty):
+        return
     ws.cell(row, 11).value = input_quote_price(item)
     ws.cell(row, 12).value = input_quote_total_formula(row, item)
     # 工分始终按 小计/100 给公式；未命中自动定价的行由人工补单价/小计后自动算出，特殊情况人工改
     ws.cell(row, 13).value = f"=L{row}/100"
+    ws.cell(row, 13).number_format = "0.00;[Red]0.00"
 
 
 def fill_page(
@@ -1371,6 +1393,7 @@ def fill_page(
         ws.cell(row, 11).value = price_for(item)
         ws.cell(row, 12).value = line_total_formula(row, item)
         ws.cell(row, 13).value = f"=L{row}/100"
+        ws.cell(row, 13).number_format = "0.00;[Red]0.00"
 
     for (row, col), value in PAGE_CELL_OVERRIDES.get(sheet_no, {}).items():
         ws.cell(row, col).value = value
@@ -1512,7 +1535,14 @@ def fill_page_input_only(
         order_no = header.get("order_no") or ""
     ws["D2"] = header.get("address") if sheet_no == 1 else "=+'1'!D2"
     ws["F2"] = (header.get("customer") or "") if sheet_no == 1 else "=+'1'!F2"
-    ws["Q2"] = order_no or ""
+    # Q2 各页值相同（子单时为 基础单号-子单总数），模板设计为第 2 页起公式
+    # 映射第 1 页，改第一页订单编号全部页联动；R2 子单序号每页不同保持实值
+    if sheet_no == 1:
+        ws["Q2"] = order_no or ""
+    elif order_no:
+        ws["Q2"] = "=+'1'!Q2"
+    else:
+        ws["Q2"] = ""
     ws["R2"] = order_sub_no or None
     ws["E3"] = header.get("end_customer") if sheet_no == 1 else "='1'!E3"
     ws["Q5"] = "=+Q2" if order_no else ""
@@ -1536,9 +1566,11 @@ def fill_page_input_only(
         ws.cell(row, 9).value = quote_meter_value(item, row)
         set_quote_area_cell(ws, row, item)
         apply_input_quote_pricing(ws, row, item)
-        if sheet_no > 1 and first_page_colors and first_page_colors[0]:
+        if sheet_no > 1 and first_page_colors and first_page_colors[0] \
+                and color_cells[i - 1] == first_page_colors[0]:
             # 颜色跟随第 1 页：sheet1 颜色是 N8 开始的整块合并单元格，
-            # 其余页颜色统一映射 ='1'!N8，改 sheet1 一次全部生效
+            # 颜色相同的页统一映射 ='1'!N8，改 sheet1 一次全部生效；
+            # 颜色不同的页（按颜色分组拆出来的）保留自己的颜色
             ws.cell(row, 14).value = "='1'!N8"
         else:
             ws.cell(row, 14).value = color_cells[i - 1]
@@ -1721,7 +1753,8 @@ def build_workbook_input_only(
         ws = wb[str(idx)]
         style_template_ws = first_page_style if idx == 1 else other_page_style
         fill_page_input_only(ws, idx, area, items, total_pages, style_template_ws, header, col_map, sub_orders, first_page_colors)
-    fill_hardware_sheets(wb, hardware_items, groups)
+    # 五金合成一个表：全部按顺序进 五金-1，超 20 行续 五金-2/3（不传 groups）
+    fill_hardware_sheets(wb, hardware_items)
     if "_hardware_template" in wb.sheetnames:
         del wb["_hardware_template"]
 
@@ -1904,12 +1937,11 @@ def _prepare_hardware_sheet(ws: Worksheet, sheet_no: int, page_idx: int | None) 
 
 
 def fill_hardware_sheets(wb, hardware_items: list[HardwareItem], groups: list | None = None) -> None:
-    """五金表与正单分页一致：正单怎么分页，五金表就怎么分（一个子单/区域一张表）。
+    """五金合成一个表：全部五金按顺序进 五金-1，超 20 行续 五金-2/3（不丢项）。
 
-    - groups 传入正单分组 [(label, items), ...] 时，每个有五金的分组一张五金表；
-      五金按子单号匹配分组（无子单号的分组按区域匹配），已匹配的不再重复分配；
-      一个分组超过 20 行时续到下一表；未能匹配任何分组的五金追加在末尾，绝不丢失。
-    - groups 为空时退化为全部五金按 20 行/表顺序分页（兜底）。
+    - 默认（groups 为空）：全部五金按 20 行/表顺序分页；表头订单编号沿用模板
+      对第 1 页的引用；汇总 D 列第 1 页合并引用全部可见五金表。
+    - groups 传入正单分组 [(label, items), ...] 时，按分组一表拆分（备用路径）。
     模板自带的 五金-1/五金-2 复用，不够用 五金-2 克隆 五金-3/4...，多余的隐藏。
     """
     if "1\u4e94" in wb.sheetnames:
@@ -1992,12 +2024,14 @@ def fill_hardware_sheets(wb, hardware_items: list[HardwareItem], groups: list | 
         merge_hardware_remark_blocks(ws, chunk)
         if page_idx is not None and page_idx not in hw_sheet_by_page:
             hw_sheet_by_page[page_idx] = ws.title
-    wb._hw_sheet_by_page = hw_sheet_by_page
+    # 合成一个表（groups 为空）时不做按页映射，汇总 D 列走合并引用兜底
+    wb._hw_sheet_by_page = hw_sheet_by_page if groups else None
 
-    # 4) 五金表排在 汇总 之前，保持 五金-1..N 顺序
+    # 4) 五金表排在正单页（1..N）之后，保持 五金-1..N 顺序
     for ws in hw_sheets:
         wb._sheets.remove(ws)
-    anchor = wb._sheets.index(wb["\u6c47\u603b"]) if "\u6c47\u603b" in wb.sheetnames else len(wb._sheets)
+    digit_positions = [i for i, s in enumerate(wb._sheets) if s.title.isdigit()]
+    anchor = max(digit_positions) + 1 if digit_positions else len(wb._sheets)
     for offset, ws in enumerate(hw_sheets):
         wb._sheets.insert(anchor + offset, ws)
 
@@ -2057,17 +2091,26 @@ def write_summary_page_formulas(wb, subtotal_rows: dict[int, int]) -> None:
             cell = ws.cell(row, col)
             if not isinstance(cell, MergedCell):
                 cell.value = None
-    hw_sheet_by_page = getattr(wb, "_hw_sheet_by_page", {})
+    hw_sheet_by_page = getattr(wb, "_hw_sheet_by_page", None)
     for idx in sorted(subtotal_rows):
         row = idx + 2
         ws.cell(row, 1).value = "='1'!Q2" if idx == 1 else f"=A{row - 1}"
         ws.cell(row, 2).value = idx
         ws.cell(row, 3).value = f"='{idx}'!L{subtotal_rows[idx]}"
-        hw_name = hw_sheet_by_page.get(idx)
-        if hw_name is None and idx == 1 and "\u4e94\u91d1-1" in wb.sheetnames:
-            hw_name = "\u4e94\u91d1-1"  # 无分组映射时的旧行为兜底
-        if hw_name is not None:
-            ws.cell(row, 4).value = f"='{hw_name}'!R26"
+        if hw_sheet_by_page is not None:
+            # 按页对应五金表；该页没有五金则不引用
+            hw_name = hw_sheet_by_page.get(idx)
+            if hw_name is not None:
+                ws.cell(row, 4).value = f"='{hw_name}'!R26"
+        elif idx == 1:
+            # 五金合成一个表（不分页）时，第 1 页合并引用全部可见五金表
+            hw_names = sorted(
+                (n for n in wb.sheetnames
+                 if re.fullmatch(r"\u4e94\u91d1-\d+", n) and wb[n].sheet_state == "visible"),
+                key=lambda n: int(n.rsplit("-", 1)[1]),
+            )
+            if hw_names:
+                ws.cell(row, 4).value = "=" + "+".join(f"'{n}'!R26" for n in hw_names)
     total_row = max(31, len(subtotal_rows) + 3)
     ws.cell(total_row, 3).value = f"=SUM(C3:C{len(subtotal_rows) + 2})"
     ws.cell(total_row, 4).value = f"=SUM(D3:D{len(subtotal_rows) + 2})"

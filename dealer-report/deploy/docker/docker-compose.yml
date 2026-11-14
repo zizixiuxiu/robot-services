@@ -16,10 +16,16 @@ services:
       - ../../../factory-common/factory_common:/app/factory_common:ro
       - ../../data/output:/app/data/output
       - ../../logs:/app/logs
+      # AI 接入配置：由 ai-config 服务（8020）写入，这里只读，改完下一次调用即生效
+      - ../../../ai-config/config:/app/config:ro
     environment:
       - PYTHONUNBUFFERED=1
+      # 容器默认 UTC，日志时间和群里/宿主机对不上，统一北京时间
+      - TZ=Asia/Shanghai
       - OUTPUT_DIR=/app/data/output
       - LOG_DIR=/app/logs
+      - AI_CONFIG_FILE=/app/config/ai_config.json
+      # 老变量保留作兜底：配置文件缺失时仍能跑
       - AI_API_KEY=${AI_API_KEY:-}
       - AI_BASE_URL=${AI_BASE_URL:-https://api.deepseek.com/v1}
       - AI_MODEL=${AI_MODEL:-deepseek-v4-flash}

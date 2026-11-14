@@ -7,12 +7,18 @@
 
 import os
 import sys
+import json
 import shutil
 import re
+import csv
+import uuid
 import tempfile
+import urllib.request
 import xlrd
 import xlwt
 from pathlib import Path
+from keep_rows import (is_keep_row, read_row_values, reset_events, get_events,
+                       format_events, add_excluded, add_kept)
 
 # 脚本所在目录作为基础目录
 SCRIPT_DIR = Path(os.path.dirname(os.path.abspath(__file__)))
@@ -26,6 +32,40 @@ TEMPLATE_PATH = SCRIPT_DIR / 'test_P6-01_output3.xls'
 REF_DIR = SCRIPT_DIR / 'ref_classification'
 COLOR_MAP = SCRIPT_DIR / 'color_families.json'
 BASE_OUTPUT_DIR = Path(os.getenv('OUTPUT_BASE', str(SCRIPT_DIR.parent / 'data' / 'output')))
+
+# 宿主机 Excel 重写服务（CSV 来源的输出必须经 Excel/WPS 重写后南兴才能导入）
+RESAVE_URL = os.getenv('PVC_RESAVE_URL', 'http://host.docker.internal:8017/resave')
+RESAVE_EXCHANGE_CONTAINER = Path(os.getenv('PVC_RESAVE_DIR', '/app/data/resave_exchange'))
+RESAVE_EXCHANGE_HOST = os.getenv('PVC_RESAVE_HOST_DIR', r'D:\Services\robot-services\pvc-classify\data\resave_exchange')
+
+
+def resave_via_host(dst_dir):
+    """把 dst_dir 下的 xls 经宿主机 Excel COM 重写（打开另存），南兴只认重写后的文件。
+    通过 bind mount 的 resave_exchange 目录交换文件；失败时抛异常，不交付未重写的文件。"""
+    xls_files = [f for f in os.listdir(dst_dir) if f.lower().endswith('.xls')]
+    if not xls_files:
+        return
+    exchange_id = uuid.uuid4().hex[:12]
+    c_dir = RESAVE_EXCHANGE_CONTAINER / exchange_id
+    c_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        for f in xls_files:
+            shutil.copy2(os.path.join(dst_dir, f), c_dir / f)
+        host_dir = str(Path(RESAVE_EXCHANGE_HOST) / exchange_id)
+        req = urllib.request.Request(
+            RESAVE_URL,
+            data=json.dumps({'dir': host_dir}).encode('utf-8'),
+            headers={'Content-Type': 'application/json'},
+        )
+        with urllib.request.urlopen(req, timeout=300) as resp:
+            payload = json.loads(resp.read().decode('utf-8'))
+        if not payload.get('success'):
+            raise RuntimeError(f"Excel 重写服务返回失败: {payload.get('error')}")
+        print(f"  [Resave] 宿主机 Excel 重写完成: {payload.get('count')} 个文件")
+        for f in xls_files:
+            shutil.copy2(c_dir / f, os.path.join(dst_dir, f))
+    finally:
+        shutil.rmtree(c_dir, ignore_errors=True)
 
 
 def is_red_row(book, sheet, row_idx):
@@ -77,19 +117,120 @@ def extract_date_code(filepath):
     return None
 
 
+# 南兴优化清单 CSV 列（套板南兴优化清单.csv，GBK 编码；分柜号/特殊工艺为后期新增可选列）
+CSV_COLS = ['条形码', '材料', '开料长', '开料宽', '数量', '厚度', '工件名称', '颜色',
+            '订单编号', '客户地址', '批次号', '材料描述2', '分柜号', '特殊工艺']
+# 管线标准输入列（门套/窗套/护墙 sheet，18 列）
+XLS_HEADER = ['工件名称', '大类', '开料长', '开料宽', '数量', '厚度', '单双', '颜色',
+              '生产号', '客户名称', '工艺', '材质', '内填', '生产类型', '单项备注',
+              '特殊要求', '回传单号', '安装位置']
+# 透传列：原样保留到最终分类输出（追加在 18 标准列之后）
+PASSTHROUGH_COLS = ['条形码', '批次号', '材料描述2']
+# 内部透传列：不追加到输出，仅用于覆盖输出「工件名称」列为原始整串
+ORIG_ITEM_COL = '原工件名称'
+# 新增透传列（PTB260917002 起 CSV 新增）：分柜号、特殊工艺，原样追加到输出 M/N 列
+PASSTHROUGH_COLS2 = ['分柜号', '特殊工艺']
+
+
+def _csv_sheet_kind(item_name):
+    """根据 CSV 工件名称判断归入哪个 sheet：窗套/护墙/门套（默认）"""
+    if '护墙' in item_name:
+        return '护墙'
+    if '窗套' in item_name or '哑口' in item_name or item_name.startswith('指接板'):
+        return '窗套'
+    return '门套'
+
+
+def csv_to_xls(src_csv, dst_xls):
+    """南兴优化清单 CSV 转管线标准 xls（门套/窗套/护墙 三 sheet 结构，值为空也保留表头）"""
+    raw = open(src_csv, 'rb').read()
+    for enc in ('utf-8-sig', 'gbk'):
+        try:
+            text = raw.decode(enc)
+            break
+        except UnicodeDecodeError:
+            continue
+    else:
+        raise ValueError(f'无法识别 CSV 编码: {src_csv}')
+
+    rows = list(csv.reader(text.splitlines()))
+    if not rows:
+        raise ValueError(f'CSV 无内容: {src_csv}')
+    header = [c.strip() for c in rows[0]]
+    col_idx = {name: header.index(name) for name in CSV_COLS if name in header}
+    for required in ('开料长', '开料宽', '数量', '厚度', '工件名称', '颜色'):
+        if required not in col_idx:
+            raise ValueError(f'CSV 缺少必要列「{required}」: {src_csv}')
+
+    def get(row, name):
+        i = col_idx.get(name)
+        return row[i].strip() if i is not None and i < len(row) else ''
+
+    def num(row, name):
+        v = get(row, name)
+        try:
+            return float(v)
+        except ValueError:
+            return v
+
+    sheets = {'门套': [], '窗套': [], '护墙': []}
+    for row in rows[1:]:
+        if not any(c.strip() for c in row):
+            continue
+        item_name = get(row, '工件名称')
+        # 工件名称形如 门套_竖套板/单面单开槽(合页面开槽)：大类取下划线后、斜杠前
+        if '_' in item_name:
+            item_type, rest = item_name.split('_', 1)
+        else:
+            item_type, rest = item_name, ''
+        category = rest.split('/')[0].strip()
+        single_double = '双面' if '双面' in item_name else ('单面' if '单面' in item_name else '')
+        sheets[_csv_sheet_kind(item_name)].append([
+            item_type, category, num(row, '开料长'), num(row, '开料宽'), num(row, '数量'),
+            num(row, '厚度'), single_double, get(row, '颜色'), get(row, '订单编号'),
+            get(row, '客户地址'), '', '', '', '正常生产', '', '', '', '',
+            # 透传列：条形码 / 批次号 / 材料描述2 / 原工件名称(内部覆盖用) / 分柜号 / 特殊工艺
+            get(row, '条形码'), get(row, '批次号'), get(row, '材料描述2'), item_name,
+            get(row, '分柜号'), get(row, '特殊工艺'),
+        ])
+
+    wb = xlwt.Workbook()
+    for sheet_name in ('门套', '窗套', '护墙'):
+        data = sheets[sheet_name]
+        if not data and sheet_name == '护墙':
+            continue  # 护墙无数据则不建 sheet（管线对护墙是可选项）
+        ws = wb.add_sheet(sheet_name)
+        for c, h in enumerate(XLS_HEADER + PASSTHROUGH_COLS + [ORIG_ITEM_COL] + PASSTHROUGH_COLS2):
+            ws.write(0, c, h)
+        for r, row_data in enumerate(data, start=1):
+            for c, v in enumerate(row_data):
+                ws.write(r, c, v)
+    wb.save(dst_xls)
+    print(f'  [CSV] 已转换为 xls: 门套={len(sheets["门套"])}, 窗套={len(sheets["窗套"])}, 护墙={len(sheets["护墙"])}')
+
+
 def copy_sheet_to_writer(book, writer, sheet_name, new_name=None, skip_red=False):
-    """复制 sheet 到 writer，可选跳过红色行"""
+    """复制 sheet 到 writer，可选跳过红色行（封边条等豁免行始终保留）"""
     old_sheet = book.sheet_by_name(sheet_name)
     new_sheet = writer.add_sheet(new_name or sheet_name)
     out_row = 0
     blank_style = xlwt.XFStyle()
+    kept = 0
     for row in range(old_sheet.nrows):
         if skip_red and row > 0 and is_red_row(book, old_sheet, row):
-            continue
+            values = read_row_values(old_sheet, row)
+            if is_keep_row(values):
+                kept += 1
+                add_kept(sheet_name, values)
+            else:
+                add_excluded(sheet_name, values, '红字标记')
+                continue
         for col in range(old_sheet.ncols):
             value = old_sheet.cell_value(row, col)
             new_sheet.write(out_row, col, value, blank_style)
         out_row += 1
+    if kept:
+        print(f'  [Keep] {sheet_name} 标红但属豁免行(封边条等)，已保留: {kept} 行')
     return new_sheet
 
 
@@ -124,9 +265,16 @@ def run_pipeline(src_path, final_output):
     mk_sheet_src = book_src.sheet_by_name(menkuang_sheet_name)
     ct_sheet_src = book_src.sheet_by_name(chuangtao_sheet_name)
 
-    # 统计红色行
-    mk_red = sum(1 for r in range(1, mk_sheet_src.nrows) if is_red_row(book_src, mk_sheet_src, r))
-    ct_red = sum(1 for r in range(1, ct_sheet_src.nrows) if is_red_row(book_src, ct_sheet_src, r))
+    # 统计红色行（封边条等豁免行会保留，不计入被过滤数）
+    def _count_red(sheet):
+        n = 0
+        for r in range(1, sheet.nrows):
+            if is_red_row(book_src, sheet, r) and not is_keep_row(read_row_values(sheet, r)):
+                n += 1
+        return n
+
+    mk_red = _count_red(mk_sheet_src)
+    ct_red = _count_red(ct_sheet_src)
     if mk_red or ct_red:
         print(f'  [Filter] 过滤红色行: 门套={mk_red}, 窗套={ct_red}')
 
@@ -190,6 +338,7 @@ def process_input(src_path, dir_name=None, output_base=None, debug_output=False)
 
     date_code = extract_date_code(str(src_path)) or dir_name
 
+    reset_events()  # 清空本线程的剔除/保留记录（回传到飞书卡片用）
     work_dir = Path(tempfile.mkdtemp(prefix='pvc_'))
     try:
         final_output = work_dir / f'{date_code}_for_classify.xls'
@@ -198,8 +347,14 @@ def process_input(src_path, dir_name=None, output_base=None, debug_output=False)
         print(f"工作目录: {work_dir}")
         print(f"{'='*60}")
 
-        # 1. Pipeline
-        run_pipeline(str(src_path), str(final_output))
+        # 1. Pipeline（CSV 输入先转为标准 xls，输出需经宿主机 Excel 重写后南兴才能导入）
+        is_csv = src_path.suffix.lower() == '.csv'
+        if is_csv:
+            converted = work_dir / f'{src_path.stem}_converted.xls'
+            csv_to_xls(str(src_path), str(converted))
+            run_pipeline(str(converted), str(final_output))
+        else:
+            run_pipeline(str(src_path), str(final_output))
 
         # 2. Classify
         auto_dir = work_dir / f'{dir_name}-自动分类'
@@ -210,7 +365,12 @@ def process_input(src_path, dir_name=None, output_base=None, debug_output=False)
         print(f"\n  [Classify] Running classify_output...")
         summary = classify_output.process_file(str(final_output), str(auto_dir), str(REF_DIR), str(COLOR_MAP)) or {}
 
+        # CSV 来源的输出必须经宿主机 Excel 重写（南兴只认 Excel/WPS 重写过的文件）
+        if is_csv:
+            resave_via_host(str(auto_dir))
+
         output_files = sorted([f for f in auto_dir.rglob('*.xls') if f.is_file()])
+        events = get_events()
         result = {
             'work_dir': str(work_dir),
             'auto_dir': str(auto_dir),
@@ -218,6 +378,10 @@ def process_input(src_path, dir_name=None, output_base=None, debug_output=False)
             'count': len(output_files),
             'quantity_total': summary.get('quantity_total', 0),
             'quantity_files': summary.get('quantity_files', []),
+            # 被剔除 / 被豁免保留的行：随响应回传，由网关写进飞书卡片
+            'excluded_rows': events['excluded'],
+            'kept_rows': events['kept'],
+            'warnings': format_events(),
         }
 
         # 调试模式：复制到 OUTPUT_BASE

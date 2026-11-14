@@ -34,11 +34,19 @@ from generate_dealer_report import (  # noqa: E402
     write_formatted_excel_new,
 )
 
+import ai_client  # noqa: E402
+
 
 OUTPUT_DIR = Path(os.getenv("OUTPUT_DIR", str(WORK_DIR.parent / "data" / "output")))
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 logger = setup_logging("dealer-report")
+
+# 启动时把生效的 AI 接入配置打进日志：出问题时先看这行，就知道走的是哪家模型
+_ai_status = ai_client.status()
+logger.info("AI 接入：provider=%s model=%s configured=%s source=%s file=%s",
+            _ai_status["provider"], _ai_status["model"], _ai_status["configured"],
+            _ai_status["source"], _ai_status["file"] or "-")
 
 MISSING_FILES_ERROR = "需要上传 files 数组，包含账号指标和设计师数据统计文件"
 

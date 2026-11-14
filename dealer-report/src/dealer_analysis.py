@@ -8,6 +8,8 @@ that are appended after the account-detail sheet.
 import os
 import json
 import urllib.request
+
+import ai_client
 import numpy as np
 import pandas as pd
 from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
@@ -165,35 +167,8 @@ def _safe_json_loads(text):
 
 
 def call_deepseek(prompt: str) -> str:
-    """调用 DeepSeek API，未配置 key 时返回空字符串。"""
-    api_key = os.getenv('AI_API_KEY')
-    base_url = os.getenv('AI_BASE_URL', 'https://api.deepseek.com/v1')
-    model = os.getenv('AI_MODEL', 'deepseek-v4-flash')
-
-    if not api_key:
-        return ''
-
-    try:
-        body = json.dumps({
-            'model': model,
-            'messages': [{'role': 'user', 'content': prompt}],
-            'temperature': 0.5,
-            'max_tokens': 6000,
-        }, ensure_ascii=False).encode('utf-8')
-        req = urllib.request.Request(
-            f'{base_url}/chat/completions',
-            data=body,
-            headers={
-                'Content-Type': 'application/json; charset=utf-8',
-                'Authorization': f'Bearer {api_key}',
-            },
-        )
-        with urllib.request.urlopen(req, timeout=120) as resp:
-            result = json.loads(resp.read().decode('utf-8'))
-        return result['choices'][0]['message']['content']
-    except Exception as e:
-        print(f'DeepSeek 调用失败: {e}')
-        return ''
+    """调用大模型（provider/key/model 见 ai-config 配置），未配置或失败返回空字符串。"""
+    return ai_client.chat(prompt, temperature=0.5, max_tokens=6000)
 
 
 def build_ai_prompt(df, region_stats) -> str:

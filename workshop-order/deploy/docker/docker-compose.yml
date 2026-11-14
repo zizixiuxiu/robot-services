@@ -16,11 +16,20 @@ services:
       - ../../../factory-common/factory_common:/app/factory_common:ro
       - ../../data/output:/app/data/output
       - ../../logs:/app/logs
+      - ../../data/ishare-archive:/archive
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       - PYTHONUNBUFFERED=1
+      # 容器默认 UTC，归档按月份分目录必须用本地时间，否则月初/日界会分错月
+      - TZ=Asia/Shanghai
       - LOG_DIR=/app/logs
+      # 单 worker：批量里的并发是线程，openpyxl 是纯 Python，加 worker 因 GIL
+      # 并不能提速（实测 3 份 139s，与串行 138s 无差别），只会多占内存
       - WORKSHOP_MAX_WORKERS=1
       - WORKSHOP_DISCOUNT=0.8
+      - WORKSHOP_ARCHIVE_ROOT=/archive
+      - WORKSHOP_ARCHIVE_SYNC_URL=http://host.docker.internal:8016/sync
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8006/health')"]
       interval: 30s

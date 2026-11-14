@@ -124,6 +124,8 @@ def parse_datetime(value: Any) -> datetime:
     if isinstance(value, date):
         return datetime(value.year, value.month, value.day)
     text = str(value).strip()
+    # 人脸机导出偶尔丢掉日期与时间之间的空格（如 2026-9-3018:14:00），补回来
+    text = re.sub(r"^(\d{4}-\d{1,2}-\d{1,2})(\d{1,2}:\d{2}:\d{2})$", r"\1 \2", text)
     for fmt in ("%Y-%m-%d %H:%M:%S", "%Y/%m/%d %H:%M:%S", "%Y-%m-%d %H:%M"):
         try:
             return datetime.strptime(text, fmt)

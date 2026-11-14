@@ -29,6 +29,11 @@ try:                                   # 新版导出格式兼容层（2026-10 �
 except Exception:                      # noqa: BLE001
     sheet_compat = None
 
+try:                                   # 按内容识别文件类型（sheet 名/表头）
+    import file_probe
+except Exception:                      # noqa: BLE001
+    file_probe = None
+
 # 默认模板路径；Docker 中通过环境变量 DEFAULT_TEMPLATE 覆盖为 /app/templates/...
 DEFAULT_TEMPLATE = Path(os.getenv(
     "DEFAULT_TEMPLATE",
@@ -58,8 +63,21 @@ logger = setup_logging("dealer-sales")
 MISSING_FILES_ERROR = "需要至少 3 个文件：综合查询、联思系统、奢匠下单统计"
 
 
-def _detect_file_type(filename: str) -> str:
-    """根据文件名识别文件类型"""
+def _detect_file_type(filename: str, path: str = '') -> str:
+    """识别文件类型：先读文件内容（sheet 名 / 表头关键字），再退回文件名。
+
+    文件名是人起的，改名就认不出（2026-10 联思导出改叫「经销商财务统计」），
+    所以传了路径就先看内容。
+    """
+    if path and file_probe is not None:
+        try:
+            kind = file_probe.detect_by_content(path)
+        except Exception:  # noqa: BLE001
+            kind = ''
+        if kind:
+            logger.info("文件内容识别「%s」→ %s", filename, kind)
+            return kind
+
     name = filename.lower()
     if '综合查询' in name:
         return 'zhcx'
@@ -211,9 +229,11 @@ def _process_multi(req: dict, work_dir: str) -> dict:
         with open(local_path, 'wb') as fh:
             fh.write(base64.b64decode(file_content))
 
-        ftype = _detect_file_type(filename)
+        ftype = _detect_file_type(filename, local_path)
         if ftype == 'template':
-            template_path = local_path
+            # 自己传的核对表版式与脚本模板（Sheet1/Sheet1 (2)）不同，当模板用会直接报错，
+            # 统一走固定模板，这张只作参照、不参与计算
+            logger.info("参照文件（不参与计算）: %s", filename)
         elif ftype != 'unknown':
             file_map[ftype] = local_path
 

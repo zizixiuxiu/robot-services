@@ -8,36 +8,73 @@ from pathlib import Path
 from contextlib import contextmanager
 
 
+def sniff_file_format(input_path: str) -> str:
+    """按文件头识别真实格式，返回 'xlsx' | 'xls' | 'unknown'。
+
+    兼容扩展名与真实格式不符的情况（如把 xlsx 改成 .xls）。
+    """
+    try:
+        with open(input_path, 'rb') as f:
+            header = f.read(8)
+    except Exception:
+        return 'unknown'
+    if header.startswith(b'PK\x03\x04'):
+        return 'xlsx'
+    if header.startswith(b'\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1'):
+        return 'xls'
+    return 'unknown'
+
+
+def as_xlsx_path(input_path: str) -> str:
+    """如果文件真实格式是 xlsx 但扩展名是 .xls，复制一份带 .xlsx 后缀的临时文件并返回路径；否则返回原路径。"""
+    if sniff_file_format(input_path) == 'xlsx' and input_path.lower().endswith('.xls'):
+        tmp = tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False)
+        tmp.close()
+        shutil.copy(input_path, tmp.name)
+        return tmp.name
+    return input_path
+
+
 def detect_file_type(input_path: str) -> str:
     """根据 sheet 名判断文件类型：'order_split' | 'hardware' | 'unknown'"""
-    try:
-        import xlrd
-        book = xlrd.open_workbook(input_path)
-        names = book.sheet_names()
-        if any(s in names for s in ['实木附件', '实木柜门']):
-            return 'order_split'
-        if any('五' in s for s in names):
-            return 'hardware'
-    except Exception:
-        pass
-    try:
-        import openpyxl
-        wb = openpyxl.load_workbook(input_path, read_only=True)
-        names = wb.sheetnames
-        wb.close()
-        if any(s in names for s in ['实木附件', '实木柜门', '柜体']):
-            return 'order_split'
-        if any('五' in s for s in names):
-            return 'hardware'
-    except Exception:
-        pass
+    fmt = sniff_file_format(input_path)
+    is_xlsx = fmt == 'xlsx'
+    is_xls = fmt == 'xls'
+
+    if is_xls:
+        try:
+            import xlrd
+            book = xlrd.open_workbook(input_path)
+            names = book.sheet_names()
+            if any(s in names for s in ['实木附件', '实木柜门']):
+                return 'order_split'
+            if any('五' in s for s in names):
+                return 'hardware'
+        except Exception:
+            pass
+        return 'unknown'
+
+    if is_xlsx:
+        try:
+            import openpyxl
+            wb = openpyxl.load_workbook(as_xlsx_path(input_path), read_only=True)
+            names = wb.sheetnames
+            wb.close()
+            if any(s in names for s in ['实木附件', '实木柜门', '柜体']):
+                return 'order_split'
+            if any('五' in s for s in names):
+                return 'hardware'
+        except Exception:
+            pass
+        return 'unknown'
+
     return 'unknown'
 
 
 def xlsx_to_xls(src: str, dst: str):
     """xlsx 转 xls（只复制值）"""
     import openpyxl, xlwt
-    wb_in = openpyxl.load_workbook(src)
+    wb_in = openpyxl.load_workbook(as_xlsx_path(src))
     wb_out = xlwt.Workbook()
     for sn in wb_in.sheetnames:
         ws_in = wb_in[sn]

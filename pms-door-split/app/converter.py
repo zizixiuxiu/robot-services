@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import csv
 import io
+import json
+import os
 import re
 import unicodedata
 from dataclasses import dataclass
@@ -20,7 +22,7 @@ THICKNESS_RE = re.compile(
     re.IGNORECASE,
 )
 
-# 剔除门型（与 door-skin-converter 保持一致；清单更新需两边同步）
+# 剔除门型（内置清单与 door-skin-converter 保持一致；运行时剔除直接继承其 JSON，无需两边同步）
 EXCLUDED_DOOR_MODELS = (
     "2091", "7066",
     "N1049", "N1050", "N1051", "N1052", "N1053",
@@ -33,17 +35,62 @@ EXCLUDED_DOOR_MODELS = (
 
 EXCLUDED_NAME_KEYWORDS = ("铝框门",)
 
+# 剔除厚度（工艺路线拆分后/已是皮行的厚度命中即不生成；整行全是剔除厚度则整行剔除）
+# 2026-09-19 撤销 6mm 剔除，保留常量便于后续再启用。
+EXCLUDED_THICKNESSES = frozenset()
+
 DOOR_MODEL_RE = re.compile(r"[A-Z]{1,4}[^A-Z0-9]?\d{2,4}|\d{4}")
 
+# 运行时剔除清单：继承 door-skin-converter 的运行时 JSON（宿主机 data 目录），
+# 群里 @机器人 加的型号/关键词两边同时生效，无需再手动同步内置清单。
+# 本服务只读（写入方是 door-skin-converter 的 /exclusions 接口）。
+RUNTIME_EXCLUSIONS_FILE = Path(
+    os.getenv("RUNTIME_EXCLUSIONS_FILE", "/app/data/runtime_exclusions.json")
+)
+
+
+def load_runtime_exclusions() -> dict:
+    """读取运行时剔除清单（不存在/损坏时返回空清单）。"""
+    try:
+        data = json.loads(RUNTIME_EXCLUSIONS_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {"models": [], "keywords": []}
+    return {
+        "models": [str(m) for m in data.get("models", []) if str(m).strip()],
+        "keywords": [str(k) for k in data.get("keywords", []) if str(k).strip()],
+    }
+
+
+def get_excluded_models() -> list[str]:
+    """内置型号 + 运行时型号（去重，保序）。"""
+    merged = list(EXCLUDED_DOOR_MODELS)
+    seen = {_normalize_model(m) for m in merged}
+    for model in load_runtime_exclusions()["models"]:
+        if _normalize_model(model) not in seen:
+            merged.append(model)
+            seen.add(_normalize_model(model))
+    return merged
+
+
+def get_excluded_keywords() -> list[str]:
+    """内置关键词 + 运行时关键词（去重，保序）。"""
+    merged = list(EXCLUDED_NAME_KEYWORDS)
+    for keyword in load_runtime_exclusions()["keywords"]:
+        if keyword not in merged:
+            merged.append(keyword)
+    return merged
+
 # 已是皮行的材料描述（如 4mm素板 / 8mm多层加密）：原样保留，不重复拆分/翻倍
-ALREADY_SKIN_RE = re.compile(r"^\d+(?:\.\d+)?mm(?:素板|多层加密|黑[炭碳]晶)$")
+ALREADY_SKIN_RE = re.compile(r"^(\d+(?:\.\d+)?)mm(?:素板|多层加密|黑[炭碳]晶)$")
 
 # 板材识别：关键词 + 模糊匹配（与 door-skin-converter 一致）
 #   多层.?加密 / 加密.?多层 → 统一输出“多层加密”
 #   黑[炭碳]晶 → 按源表实际写法输出
+#   碳晶板 → 按黑碳晶输出
 BOARD_MATERIAL_PATTERNS = (
     (re.compile(r"多层.?加密|加密.?多层"), "多层加密"),
     (re.compile(r"黑[炭碳]晶"), None),
+    (re.compile(r"碳晶板"), "黑碳晶"),
 )
 
 # 已见过的工艺描述（归一化：去厚度、忽略大小写/全半角/空格）
@@ -126,13 +173,16 @@ def extract_door_model(workpiece: Any) -> str:
     return _normalize_model(match.group(0)) if match else ""
 
 
-def extract_board_material(process_text: Any) -> str:
-    """从工艺路线文本识别板材类型，默认素板。"""
-    text = clean_text(process_text)
-    for pattern, canonical in BOARD_MATERIAL_PATTERNS:
-        match = pattern.search(text)
-        if match:
-            return canonical or match.group(0)
+def extract_board_material(*texts: Any) -> str:
+    """识别板材，默认素板。传入多列时按顺序取第一次命中（调用方把材料描述放前面）。"""
+    for text in texts:
+        raw = clean_text(text)
+        if not raw:
+            continue
+        for pattern, canonical in BOARD_MATERIAL_PATTERNS:
+            match = pattern.search(raw)
+            if match:
+                return canonical or match.group(0)
     return "素板"
 
 
@@ -176,8 +226,9 @@ def transform_rows(
     规则（与 door-skin-converter 一致）：
     - 工艺路线含 X+X 厚度 → 拆成多行，每行一个厚度
     - 数量一律 ×2
-    - 材料描述 = 厚度mm + 板材（多层加密/黑碳晶模糊识别，否则素板）；无厚度时保留原材料描述
-    - 命中剔除门型/关键词的行不进入输出
+    - 材料描述 = 厚度mm + 板材（多层加密/黑碳晶/碳晶板：工艺路线或原文件材料描述任一列命中即可；两列都有时以材料描述为准；否则素板）；无厚度时保留原材料描述
+    - 命中剔除门型/关键词的行不进入输出（含 door-skin-converter 运行时剔除清单继承）
+    - 命中剔除厚度（EXCLUDED_THICKNESSES，如 6mm）的皮/行不进入输出
     - 其他列原样透传
     """
     normalized_headers = [clean_text(value) for value in headers]
@@ -191,7 +242,8 @@ def transform_rows(
     index_of = {name: normalized_headers.index(name) for name in normalized_headers}
     order_header = next((h for h in ORDER_HEADER_CANDIDATES if h in index_of), None)
 
-    excluded_normalized = {_normalize_model(m) for m in EXCLUDED_DOOR_MODELS}
+    excluded_normalized = {_normalize_model(m) for m in get_excluded_models()}
+    excluded_keywords = get_excluded_keywords()
 
     output_rows: list[list[Any]] = []
     source_row_count = 0
@@ -216,13 +268,43 @@ def transform_rows(
         if not workpiece or not process_text:
             continue
 
-        if any(keyword in workpiece for keyword in EXCLUDED_NAME_KEYWORDS):
+        if any(keyword in workpiece for keyword in excluded_keywords):
             excluded_details.append(f"订单 {order_number}：{workpiece}（关键词剔除）")
             continue
         door_model = extract_door_model(workpiece)
         if door_model in excluded_normalized:
             excluded_details.append(f"订单 {order_number}：{workpiece}")
             continue
+
+        original_desc = clean_text(padded[index_of["材料描述"]])
+        original_thickness = padded[index_of["厚度"]]
+
+        # 剔除厚度：命中 EXCLUDED_THICKNESSES 的皮/行不进入输出（与门型剔除一样不计入源行数）
+        skin_match = ALREADY_SKIN_RE.match(original_desc)
+        if skin_match:
+            skin_thickness = normalize_decimal_text(skin_match.group(1))
+            if skin_thickness in EXCLUDED_THICKNESSES:
+                excluded_details.append(f"订单 {order_number}：{workpiece}（厚度 {skin_thickness}mm 剔除）")
+                continue
+            thicknesses: list[str] = []
+        else:
+            raw_thicknesses = extract_thicknesses(process_text)
+            thicknesses = [t for t in raw_thicknesses if t not in EXCLUDED_THICKNESSES]
+            for dropped in raw_thicknesses:
+                if dropped in EXCLUDED_THICKNESSES:
+                    excluded_details.append(f"订单 {order_number}：{workpiece}（厚度 {dropped}mm 剔除）")
+            if raw_thicknesses and not thicknesses:
+                continue
+
+        # 非皮行且工艺路线未写明厚度：
+        # - 「皮装板」类工艺直接剔除（典型如 复合贴YSM皮装板），避免输出未转换的原材料描述
+        # - 其他无厚度工艺保留原材料描述并作为空白厚度警告，待积累更多案例后再决定是否通用剔除
+        if not skin_match and not thicknesses:
+            if "皮装板" in clean_text(process_text):
+                excluded_details.append(f"订单 {order_number}：{workpiece}（工艺路线未写明厚度且为皮装板，已剔除）")
+                continue
+            blank_thickness_orders.append(f"订单 {order_number}：{workpiece}")
+            thicknesses = [""]
 
         source_row_count += 1
         try:
@@ -231,17 +313,13 @@ def transform_rows(
             raise ConversionError(f"订单 {order_number or '(空)'} 的数量不是有效数字：{padded[index_of['数量']]!r}") from exc
         input_quantity_sum += raw_quantity
 
-        original_desc = clean_text(padded[index_of["材料描述"]])
-        original_thickness = padded[index_of["厚度"]]
-
         # 已是皮行（材料描述已是 Nmm板材）：原样透传，不重复拆分/翻倍
-        if ALREADY_SKIN_RE.match(original_desc):
+        if skin_match:
             output_rows.append([clean_number(value) for value in padded[: len(normalized_headers)]])
             continue
 
         quantity = multiply_quantity(padded[index_of["数量"]])
 
-        thicknesses = extract_thicknesses(process_text)
         if len(thicknesses) > 1:
             split_source_rows += 1
             raw_match = ""
@@ -256,7 +334,7 @@ def transform_rows(
             blank_thickness_orders.append(f"订单 {order_number}：{workpiece}")
             thicknesses = [""]
 
-        board_material = extract_board_material(process_text)
+        board_material = extract_board_material(original_desc, process_text)
         if normalize_process_description(process_text) not in KNOWN_PROCESS_DESCRIPTIONS:
             new_process_details.append(
                 f"订单 {order_number}：{workpiece}（工艺「{process_text}」未见过，请检查）"

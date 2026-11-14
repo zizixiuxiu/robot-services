@@ -12,7 +12,7 @@ from openpyxl.cell.cell import MergedCell
 
 # 需要忽略的名称
 # 精确匹配用于单字/特定结构件，避免误伤“中竖板/横隔板”等正常板件名称。
-IGNORED_EXACT_NAMES = {'竖', '横', '标准雕花', '边框'}
+IGNORED_EXACT_NAMES = {'竖', '横', '标准雕花', '边框', '边框料'}
 
 # 含以下关键词即过滤。
 IGNORED_KEYWORDS = ['竖枋', '横枋', '上横枋', '下横枋', '芯板', '中横', '格条', '隔条', '门洞', '格栅条', '左右板子', '前后板子', '花格框条']
@@ -552,6 +552,7 @@ def generate_one(input_path, template_path_or_stream, order_no, output_dir, name
             22: r['texture'],
             23: r['guiti_remark'],
             24: None,
+            25: None,
         }
         for col, val in data.items():
             ws2.cell(row=row, column=col, value=val)

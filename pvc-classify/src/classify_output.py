@@ -14,6 +14,7 @@ import struct
 import xlrd
 import xlwt
 from xlutils.copy import copy
+from keep_rows import is_keep_row, read_row_values, add_excluded, add_kept
 
 OVERSIZE_LIMIT = 2420
 
@@ -45,6 +46,7 @@ def read_sheet_data(xls_path, sheet_name):
     sheet = book.sheet_by_name(sheet_name)
     rows = []
     skipped = []
+    kept_red = []
     for i in range(1, sheet.nrows):
         row = [sheet.cell_value(i, j) for j in range(sheet.ncols)]
         if len(row) > 9 and row[9]:
@@ -58,9 +60,16 @@ def read_sheet_data(xls_path, sheet_name):
                     is_red = True
                     break
             if is_red:
-                skipped.append(str(row[9]))
-                continue
+                if is_keep_row(read_row_values(sheet, i)):
+                    kept_red.append(str(row[9]))
+                    add_kept(sheet_name, read_row_values(sheet, i))
+                else:
+                    skipped.append(str(row[9]))
+                    add_excluded(sheet_name, row, '红字标记')
+                    continue
             rows.append(row)
+    if kept_red:
+        print(f"  [Keep] 标红但属豁免行(封边条等)，已保留 {len(kept_red)} 行: {', '.join(sorted(set(kept_red)))}")
     if skipped:
         print(f"  Auto-skipped {len(skipped)} red-marked rows: {', '.join(sorted(set(skipped)))}")
     return rows
@@ -86,6 +95,7 @@ def filter_skipped_rows(data_rows, skip_set):
         order_id = row[9] if len(row) > 9 else ''
         if order_id in skip_set:
             skipped_ids.append(order_id)
+            add_excluded('跳过清单', row, '在跳过清单中')
         else:
             filtered.append(row)
     return filtered, skipped_ids
@@ -126,11 +136,11 @@ def extract_base_color(color):
     for suffix in ['门套门扇']:
         if color.endswith(suffix):
             color = color[:-len(suffix)]
-    # 多层加密 / 黑碳晶 是材质特征，不是颜色名的一部分
-    if '多层加密' in color:
-        color = color.replace('多层加密', '')
-    if '黑碳晶' in color:
-        color = color.replace('黑碳晶', '')
+    # 多层加密 / 黑碳晶 / 密度板 是材质/工艺特征，不是颜色名的一部分，
+    # 提取到 craft 字段后从 base_color 中剥离。
+    for material_keyword in ['多层加密', '黑碳晶', '密度板']:
+        if material_keyword in color:
+            color = color.replace(material_keyword, '')
     # 去掉中文描述，只保留颜色代码，如 PY02-半山胡桃 -> PY02
     m = re.match(r'^([A-Z]+\d+)-([\u4e00-\u9fff]+)$', color)
     if m:
@@ -171,6 +181,38 @@ def normalize_color_for_lookup(color):
     if m:
         return m.group(1)
     return c
+
+# 颜色值开头的色号（PY12 / ZKY-5001 / YSM230-3 / YSM02504-51 …）
+_COLOR_CODE_RE = re.compile(r'^([A-Za-z]{1,6}-?\d+(?:-\d+)?)')
+
+
+def convert_color_by_family(value, member_to_family, color_defaults=None):
+    """按颜色转换表规范颜色值：只把**开头的色号**换成 default，其余原样保留。
+
+    ZKY-5001（多层加密）多层加密 → YSM261-1多层加密   （工艺后缀归一）
+    PY12-晚秋胡桃              → YSM230-3-晚秋胡桃     （中文描述保留）
+    YSM261-1多层加密            → YSM261-1多层加密     （不变）
+    暖白                       → 暖白                （不在转换表，原样）
+    """
+    if value in (None, ''):
+        return value
+    raw = str(value).strip()
+    if not raw:
+        return value
+    m = _COLOR_CODE_RE.match(raw)
+    if not m:
+        return raw
+    code = m.group(1)
+    family = (member_to_family or {}).get(normalize_color_for_lookup(code))
+    if not family:
+        return raw
+    default = (color_defaults or {}).get(family) or family
+    rest = raw[len(code):]
+    # 工艺后缀写法归一：ZKY-5001（多层加密）多层加密 → YSM261-1多层加密
+    rest = re.sub(r'[（(]\s*多层加密\s*[）)]', '', rest)
+    rest = re.sub(r'(多层加密)+', '多层加密', rest)
+    return f'{default}{rest}'
+
 
 def load_color_families(json_path=None):
     """Load color family mapping from JSON (new format with YSM defaults)."""
@@ -229,9 +271,15 @@ def non_default_thickness_suffix(value, default):
     return '' if thickness == default else f'{thickness}厚'
 
 
-def craft_from_color(color):
+def craft_from_color(color, material=''):
     color = _split_batch_color(color)
-    return '多层加密' if '多层加密' in color else ''
+    if '黑碳晶' in color or '黑碳晶' in material:
+        return '黑碳晶'
+    if '密度板' in color or '密度板' in material:
+        return '密度板'
+    if '多层加密' in color:
+        return '多层加密'
+    return ''
 
 
 def is_heitanjing(row):
@@ -289,63 +337,19 @@ def build_oversize_meta(cat_type):
 def build_category_meta(cat_type, base_color, thickness, craft='', hidden=False, oversize=False):
     """Build a single source of truth for category identity.
 
-    Category identity is product type + normalized color + craft + thickness
-    (+ optional oversize flag). The returned name is only the display/output
-    filename stem; all merge logic should prefer the structured fields so
-    thickness cannot be dropped by a filename parsing edge case.
+    输出文件名统一为："{厚度} {颜色}{材质}"，例如 "28 PY03.xls"、
+    "35 YSM-8897多层加密.xls"。
+    不再在文件名中体现门套/哑口套/护墙/超长等产品类型字样，
+    但保留多层加密/黑碳晶/密度板等材质/工艺字样。
     """
+    default_thickness = 28 if cat_type == 'menkuang' else 18
+    thickness_int = parse_thickness(thickness, default_thickness)
+    # 隐形门套厚度强制为 18，但仍使用统一命名
     if hidden:
-        hidden_thickness = 18
-        name = f'{base_color}{craft}隐形门套{hidden_thickness}'
-        return {
-            'type': 'menkuang',
-            'base_color': base_color,
-            'craft': craft,
-            'thickness': hidden_thickness,
-            'merge_suffix': '隐形',
-            'name': name,
-        }
-
-    oversize_suffix = f'超{OVERSIZE_LIMIT}' if oversize else ''
-
-    if oversize:
-        # 超长门套/窗套统一按材质命名，不再区分颜色/厚度
-        if cat_type == 'menkuang':
-            name = f'门套超长-{base_color}'
-        elif cat_type == 'yakou':
-            name = f'窗套超长-{base_color}'
-        else:
-            name = f'{base_color}{craft}{thickness_suffix}{oversize_suffix}'
-        merge_suffix = f'超长-{base_color}'
-        thickness_int = parse_thickness(thickness, 28 if cat_type == 'menkuang' else 18)
-        return {
-            'type': cat_type,
-            'base_color': base_color,
-            'craft': craft,
-            'thickness': thickness_int,
-            'merge_suffix': merge_suffix,
-            'name': name,
-        }
-
-    if cat_type == 'menkuang':
-        thickness_int = parse_thickness(thickness, 28)
-        thickness_suffix = non_default_thickness_suffix(thickness_int, 28)
-        name = f'{base_color}{craft}门套{thickness_suffix}'
-    elif cat_type == 'yakou':
-        thickness_int = parse_thickness(thickness, 18)
-        thickness_suffix = non_default_thickness_suffix(thickness_int, 18)
-        name = f'哑口套{base_color}{craft}{thickness_suffix}'
-    elif cat_type == 'huqiang':
-        thickness_int = parse_thickness(thickness, 18)
-        thickness_suffix = f'厚度{thickness_int}'
-        name = f'护墙-{base_color}{thickness_suffix}'
-    else:
-        thickness_int = parse_thickness(thickness, 0)
-        thickness_suffix = non_default_thickness_suffix(thickness_int, 0)
-        name = f'{base_color}{craft}{thickness_suffix}'
-
-    # 非超尺寸行不加入 base_color，保证同一颜色族的不同颜色名仍能被合并。
-    merge_suffix = f'{craft}{thickness_suffix}'
+        thickness_int = 18
+    name = f'{thickness_int} {base_color}{craft}'
+    # 合并分组由厚度 + 材质决定，避免相同颜色不同材质混在一个文件
+    merge_suffix = f'{thickness_int} {craft}'
     return {
         'type': cat_type,
         'base_color': base_color,
@@ -368,11 +372,17 @@ def meta_from_category(cat_name, info):
     if meta:
         return meta
     # Compatibility fallback for older ad-hoc category dictionaries.
+    # 新格式 "{厚度} {颜色}"：直接从头部的数字取厚度
+    m = re.match(r'^(\d+)\s+', cat_name)
+    if m:
+        thickness = parse_thickness(m.group(1), 0)
+    else:
+        thickness = parse_thickness(re.search(r'(\d+)厚$', cat_name).group(1), 0) if re.search(r'(\d+)厚$', cat_name) else 0
     return {
         'type': info.get('type', '') if isinstance(info, dict) else '',
         'base_color': get_base_color_from_cat(cat_name),
         'craft': '多层加密' if '多层加密' in cat_name else '',
-        'thickness': parse_thickness(re.search(r'(\d+)厚$', cat_name).group(1), 0) if re.search(r'(\d+)厚$', cat_name) else 0,
+        'thickness': thickness,
         'merge_suffix': get_cat_suffix(cat_name),
         'name': cat_name,
     }
@@ -389,8 +399,9 @@ def classify_menkuang_rows(rows, date_code, output_dir=None, reference_dir=None)
         item_name = row[0] if len(row) > 0 else ''
         color = row[7] if len(row) > 7 else ''
         thickness = row[5] if len(row) > 5 else 28
+        material = str(row[12]) if len(row) > 12 else ''
         base_color = extract_base_color(color)
-        craft = craft_from_color(color)
+        craft = craft_from_color(color, material)
 
         if '隐形门套' in str(item_name):
             # 隐形门套厚度强制为18
@@ -417,10 +428,9 @@ def classify_yakou_rows(rows, date_code):
     for row in rows:
         color = row[7] if len(row) > 7 else ''
         thickness = row[5] if len(row) > 5 else 18
+        material = str(row[12]) if len(row) > 12 else ''
         base_color = extract_base_color(color)
-        craft = craft_from_color(color)
-        if is_heitanjing(row):
-            craft = '黑碳晶'
+        craft = craft_from_color(color, material)
         meta = build_category_meta('yakou', base_color, thickness, craft)
         add_category_row(categories, meta, row)
 
@@ -441,7 +451,8 @@ def read_huqiang_data(xls_path):
     col_idx = {}
     for r in range(min(5, sheet.nrows)):
         headers = [str(sheet.cell_value(r, c)).strip() for c in range(sheet.ncols)]
-        for name in ['生产号', '颜色', '开料长', '开料宽', '数量', '厚度', '客户名称']:
+        for name in ['生产号', '颜色', '开料长', '开料宽', '数量', '厚度', '客户名称',
+                     '条形码', '批次号', '材料描述2', '原工件名称', '分柜号', '特殊工艺']:
             for c, h in enumerate(headers):
                 if h == name:
                     col_idx[name] = c
@@ -475,10 +486,15 @@ def read_huqiang_data(xls_path):
             except Exception:
                 pass
         if is_red:
-            skipped += 1
-            continue
+            red_values = [sheet.cell_value(r, c) for c in range(sheet.ncols)]
+            if is_keep_row(red_values):
+                add_kept('护墙', red_values)  # 封边条等豁免行：即使标红也保留
+            else:
+                skipped += 1
+                add_excluded('护墙', red_values, '红字标记')
+                continue
         
-        rows.append([
+        row = [
             order_id,
             get(r, '开料长'),
             get(r, '开料宽'),
@@ -486,15 +502,35 @@ def read_huqiang_data(xls_path):
             get(r, '厚度'),
             get(r, '颜色'),
             get(r, '客户名称') if '客户名称' in col_idx else '',
-        ])
+        ]
+        # 透传列（CSV 转换输入才有）
+        if '条形码' in col_idx:
+            row += [get(r, '条形码'), get(r, '批次号'), get(r, '材料描述2'), get(r, '原工件名称'),
+                    get(r, '分柜号'), get(r, '特殊工艺')]
+        rows.append(row)
     
     return rows, skipped
 
+_HUQIANG_MARK_RE = re.compile(r'[（(]\s*护墙\s*[）)]\s*$')
+
+
+def build_huqiang_name(thickness, base_color, craft=''):
+    """护墙输出文件名："{厚度} {颜色}{材质}（护墙）"，如 "15 YSM262-4多层加密（护墙）"。"""
+    core = _HUQIANG_MARK_RE.sub('', str(base_color)).strip()
+    return f'{thickness} {core}{craft}（护墙）'
+
+
 def classify_huqiang_rows(rows):
-    """Classify 护墙 rows by color and thickness."""
+    """Classify 护墙 rows by color and thickness.
+
+    护墙行没有独立材质列，多层加密/黑碳晶/密度板 写在颜色
+    （如 "YSM262-4多层加密（护墙）"）或材料描述2 里，需和门套/窗套一样
+    提取成 craft 带进文件名，否则同颜色不同材质会被混进同一个文件。
+    """
     categories = {}
     for row in rows:
         color = str(row[5]) if len(row) > 5 else ''
+        material = str(row[9]) if len(row) > 9 and row[9] not in (None, '') else ''
         raw_thickness = row[4] if len(row) > 4 else ''
         try:
             thickness = int(float(raw_thickness)) if raw_thickness not in (None, '') else 18
@@ -503,7 +539,11 @@ def classify_huqiang_rows(rows):
         base_color = extract_base_color(color)
         if not base_color:
             continue
-        meta = build_category_meta('huqiang', base_color, thickness)
+        craft = craft_from_color(color, material)
+        if not craft and '多层加密' in material:
+            craft = '多层加密'
+        meta = build_category_meta('huqiang', base_color, thickness, craft)
+        meta['name'] = build_huqiang_name(thickness, base_color, craft)
         add_category_row(categories, meta, row)
 
     for cat in categories.values():
@@ -512,16 +552,18 @@ def classify_huqiang_rows(rows):
     return categories
 
 def get_base_color_from_cat(cat_name):
-    # Strip the oversize suffix first so the existing regexes still work.
+    # 新格式："{厚度} {颜色}"，例如 "28 PY03"、"35 YSM-8897"
+    m = re.match(r'^\d+\s+(.+)$', cat_name)
+    if m:
+        return m.group(1).strip()
+    # 兼容旧格式（超长 / 门套 / 哑口套 / 护墙 / 隐形门套）
     name = re.sub(r'超\d+$', '', cat_name)
-    # 超长类别直接返回材质名
     m = re.match(r'^门套超长-(.+)$', name)
     if m:
         return m.group(1)
     m = re.match(r'^窗套超长-(.+)$', name)
     if m:
         return m.group(1)
-    # 非超长黑碳晶：颜色与材质分离
     m = re.match(r'^(.+?)黑碳晶门套(?:\d+厚)?$', name)
     if m:
         return m.group(1)
@@ -546,12 +588,19 @@ def get_base_color_from_cat(cat_name):
     return name.replace('多层加密', '')
 
 def get_cat_suffix(cat_name):
-    """提取类别名的工艺/材质/厚度后缀，用于分组时保持工艺一致。"""
+    """提取类别名用于合并分组的后缀/键。
+
+    新格式 "{厚度} {颜色}" 下，整个名称就是分组键。
+    保留旧格式解析以兼容历史文件。
+    """
+    # 新格式：直接返回完整名称
+    if re.match(r'^\d+\s+.+$', cat_name):
+        return cat_name
+    # 旧格式：提取工艺/材质/厚度后缀
     suffix_parts = []
     if '隐形门套' in cat_name:
         suffix_parts.append('隐形')
         return ''.join(suffix_parts)
-    # 材质组本身作为 suffix 的一部分，避免不同材质被合并
     if '黑碳晶' in cat_name:
         suffix_parts.append('黑碳晶')
     elif '密度板' in cat_name:
@@ -728,22 +777,46 @@ def find_matching_yakou_for_hidden(yx_meta, all_cats, color_families, member_to_
     return matches[0][1]
 
 
-def transform_row(row, idx, material, is_yinxing=False):
-    """Transform original 18-col row to target 10-col format."""
+def row_is_hidden_door(row):
+    """行是否属于隐形门。
+
+    工件名称在管线行 col0（门套 sheet 转换后为「隐形门套」），
+    CSV 来源的原始整串在 col21（如「隐形门套_竖套板/双面 隐形门套」）。
+    """
+    for idx in (0, 21):
+        if len(row) > idx and '隐形门' in str(row[idx]):
+            return True
+    return False
+
+
+def transform_row(row, idx, material, is_yinxing=False, color_lookup=None, color_defaults=None):
+    """Transform original 18-col row to target 10-col format.
+    透传列（CSV 转换输入才有，col 18-20 = 条形码/批次号/材料描述2）：
+    条形码替换序号写入第 1 列，批次号/材料描述2 追加在末尾两列。
+
+    color_lookup / color_defaults：颜色转换表，用于把「颜色」列的别名色号
+    规范成转换表的 default（如 ZKY-5001… → YSM261-1…）。
+    「材料描述2」保持原样透传，不做颜色转换。"""
     color = row[7] if len(row) > 7 else ''
-    full_color = str(color)
-    
+    full_color = convert_color_by_family(color, color_lookup, color_defaults)
+
     gongyi_name = row[6] if len(row) > 6 else ''
     special_req = row[17] if len(row) > 17 else ''
     if special_req and '开合页孔' in str(special_req):
         gongyi_name = str(gongyi_name) + '/开合页孔'
-    
+
+    # CSV 来源：输出「工件名称」列用原始整串（如 门套_竖套板/单面单开槽(合页面开槽)）
+    if len(row) > 21 and row[21] not in (None, ''):
+        gongyi_name = str(row[21])
+
     thickness = row[5] if len(row) > 5 else ''
     if is_yinxing and material == '垭口套':
         thickness = 18
-    
-    return [
-        idx,
+
+    barcode = row[18] if len(row) > 18 and row[18] not in (None, '') else idx
+
+    out = [
+        barcode,
         material,
         row[2] if len(row) > 2 else '',
         row[3] if len(row) > 3 else '',
@@ -754,21 +827,39 @@ def transform_row(row, idx, material, is_yinxing=False):
         row[9] if len(row) > 9 else '',
         row[10] if len(row) > 10 else '',
     ]
+    if len(row) > 18:
+        out.append(row[19] if len(row) > 19 else '')   # 批次号
+        out.append(row[20] if len(row) > 20 else '')   # 材料描述2（原样透传，不做颜色转换）
+        fengui = row[22] if len(row) > 22 else ''      # 分柜号
+        teshu = row[23] if len(row) > 23 else ''       # 特殊工艺
+        if fengui not in (None, '') or teshu not in (None, ''):
+            out += [fengui, teshu]
+    return out
 
-def transform_huqiang_row(row, idx):
-    """Transform 护墙 row [order,length,width,qty,thickness,color,customer] to 10-col."""
-    return [
-        idx,
+def transform_huqiang_row(row, idx, color_lookup=None, color_defaults=None):
+    """Transform 护墙 row [order,length,width,qty,thickness,color,customer,(条形码,批次号,材料描述2,原工件名称)] to 10-col(+透传)."""
+    barcode = row[7] if len(row) > 7 and row[7] not in (None, '') else idx
+    gongyi_name = str(row[10]) if len(row) > 10 and row[10] not in (None, '') else '护墙'
+    out = [
+        barcode,
         '护墙',
         row[1] if len(row) > 1 else '',
         row[2] if len(row) > 2 else '',
         row[3] if len(row) > 3 else '',
         row[4] if len(row) > 4 else '',
-        '护墙',
-        str(row[5]) if len(row) > 5 else '',
+        gongyi_name,
+        convert_color_by_family(row[5] if len(row) > 5 else '', color_lookup, color_defaults),
         str(row[0]) if len(row) > 0 else '',
         str(row[6]) if len(row) > 6 else '',
     ]
+    if len(row) > 7:
+        out.append(row[8] if len(row) > 8 else '')    # 批次号
+        out.append(row[9] if len(row) > 9 else '')    # 材料描述2（原样透传，不做颜色转换）
+        fengui = row[11] if len(row) > 11 else ''     # 分柜号
+        teshu = row[12] if len(row) > 12 else ''      # 特殊工艺
+        if fengui not in (None, '') or teshu not in (None, ''):
+            out += [fengui, teshu]
+    return out
 
 def to_number(value):
     """Best-effort numeric conversion for quantity totals."""
@@ -798,50 +889,36 @@ def validate_single_thickness_category(cat_name, data_rows, allow_mixed=False):
 
 
 def get_template_file(output_dir, cat_type, existing_files, reference_dir=None, cat_name=None):
-    """Find a suitable template file in output_dir or reference_dir."""
-    is_oversize_cat = cat_name and '超长' in cat_name
+    """Find a suitable template file in output_dir or reference_dir.
+
+    新文件名不再包含门套/哑口套/护墙等字样，因此直接按 cat_type
+    匹配固定名称的通用模板文件。
+    """
+    if cat_type == 'menkuang':
+        preferred = ['门套.xls']
+    elif cat_type == 'yakou':
+        preferred = ['哑口套.xls']
+    elif cat_type == 'huqiang':
+        preferred = ['护墙-模板.xls', '护墙.xls']
+    else:
+        return None
 
     def find_template(files, directory):
-        if cat_type == 'menkuang':
-            # 优先找精确以“门套.xls”结尾的模板；找不到则放宽到任意“门套”xls
-            candidates = [f for f in files
-                          if f.endswith('门套.xls') and '40厚' not in f and '15厚' not in f and not f.startswith('哑口套') and not f.startswith('护墙')]
-            if not candidates:
-                candidates = [f for f in files
-                              if '门套' in f and f.endswith('.xls') and not f.startswith('哑口套') and not f.startswith('护墙')]
-            # 超长类别优先使用普通门套模板，避免匹配到自身超长文件
-            if is_oversize_cat and candidates:
-                normal_candidates = [f for f in candidates if '超长' not in f]
-                if normal_candidates:
-                    candidates = normal_candidates
-        elif cat_type == 'yakou':
-            candidates = [f for f in files if f.startswith('哑口套') and f.endswith('.xls')]
-            if not candidates:
-                candidates = [f for f in files if '哑口套' in f and f.endswith('.xls')]
-            if is_oversize_cat and candidates:
-                normal_candidates = [f for f in candidates if '超长' not in f]
-                if normal_candidates:
-                    candidates = normal_candidates
-        elif cat_type == 'huqiang':
-            candidates = [f for f in files if f.startswith('护墙') and f.endswith('.xls')]
-        else:
-            candidates = []
-        if candidates:
-            # 优先使用文件名最短的通用模板（如 门套.xls / 哑口套.xls）
-            candidates.sort(key=len)
-            return os.path.join(directory, candidates[0])
+        for name in preferred:
+            if name in files:
+                return os.path.join(directory, name)
         return None
-    
+
     template = find_template(existing_files, output_dir)
     if template:
         return template
-    
+
     if reference_dir and os.path.exists(reference_dir):
         ref_files = [f for f in os.listdir(reference_dir) if f.endswith('.xls')]
         template = find_template(ref_files, reference_dir)
         if template:
             return template
-    
+
     return None
 
 def clone_cell_style_with_font_size(book, sheet, row_idx, col_idx, cache, font_points=12, num_format_str=None):
@@ -1088,20 +1165,38 @@ def write_to_template(target_path, data_rows, material, template_path=None):
         ws = wb.get_sheet(0)
         style_cache = {}
 
+        # 透传列（条形码/批次号/材料描述2/分柜号/特殊工艺）：数据行超过 10 列时补写表头
+        has_passthrough = any(len(r) > 10 for r in data_rows)
+        if has_passthrough:
+            header_style = clone_cell_style_with_font_size(book, source_sheet, 0, 9, style_cache, 12)
+            ws.write(0, 10, '批次号', header_style)
+            ws.write(0, 11, '材料描述2', header_style)
+            if any(len(r) > 12 for r in data_rows):
+                ws.write(0, 12, '分柜号', header_style)
+                ws.write(0, 13, '特殊工艺', header_style)
+
         # 覆盖写入 987 行（与原始 COM 逻辑保持一致，空白行用于清除旧数据）
         for i in range(987):
             if i < len(data_rows):
                 row = data_rows[i]
+            elif has_passthrough:
+                # 有条形码透传时第一列必须整列 987 行都是文本（南兴要求）：
+                # 填充行写文本序号，与数据行的文本条形码保持同一类型
+                row = [str(i + 1), material, '', '', '', '', '', '', '', '', '', '']
             else:
                 row = [i + 1, material, '', '', '', '', '', '', '', '']
             for c_idx, value in enumerate(row):
                 # 序号、生产号、颜色等按字符串写入，防止日期自动转换
                 if c_idx == 0:
-                    # 条形码/序号列设置为数字格式
-                    try:
-                        value = int(float(value)) if value not in (None, '') else ''
-                    except (ValueError, TypeError):
-                        pass
+                    if has_passthrough:
+                        # 条形码列整列保持文本，不做数字化
+                        value = str(value) if value not in (None, '') else ''
+                    else:
+                        # 条形码/序号列设置为数字格式
+                        try:
+                            value = int(float(value)) if value not in (None, '') else ''
+                        except (ValueError, TypeError):
+                            pass
                 elif c_idx in (7, 8):
                     value = str(value)
                 num_fmt = 'General' if c_idx == 0 else None
@@ -1197,22 +1292,29 @@ def process_file(input_path, output_dir, reference_dir=None, color_map_path=None
         
         if cat_type == 'menkuang':
             material = '装门门框'
-            filename = f'{cat_name}.xls'
         elif cat_type == 'huqiang':
             material = '护墙'
-            filename = f'{cat_name}.xls'
         else:
             material = '垭口套'
-            filename = f'{cat_name}.xls'
-        
+        filename = f'{cat_name}.xls'
+
         target_path = os.path.join(output_dir, filename)
-        
+
         if cat_type == 'huqiang':
             combined_rows = cat_info.get('rows_hq', [])
-            data_rows = [transform_huqiang_row(r, i+1) for i, r in enumerate(combined_rows)]
+            data_rows = [transform_huqiang_row(r, i+1, color_lookup=member_to_family,
+                                               color_defaults=color_defaults)
+                         for i, r in enumerate(combined_rows)]
         else:
             combined_rows = cat_info.get('rows_yk', []) + cat_info.get('rows_mk', [])
-            data_rows = [transform_row(r, i+1, material) for i, r in enumerate(combined_rows)]
+            # 文件级规则：本文件只要含隐形门行，整个文件的「材料」统一写「垭口套」，
+            # 保证同一个输出文件内材料列一致（如 18 YSM261-5.xls 里指接板 + 隐形门套）。
+            if any(row_is_hidden_door(r) for r in combined_rows):
+                material = '垭口套'
+                print(f"  含隐形门 → 整文件材料统一为垭口套: {filename}")
+            data_rows = [transform_row(r, i+1, material, color_lookup=member_to_family,
+                                       color_defaults=color_defaults)
+                         for i, r in enumerate(combined_rows)]
         meta = meta_from_category(cat_name, cat_info)
         validate_single_thickness_category(cat_name, data_rows, meta.get('allow_mixed_thickness', False))
         
@@ -1237,7 +1339,7 @@ def process_file(input_path, output_dir, reference_dir=None, color_map_path=None
                         if meta['thickness'] != 18:
                             related_names.append(build_category_meta('yakou', related_color, 18, meta['craft'])['name'])
                     elif cat_type == 'huqiang':
-                        related_names.append(build_category_meta('huqiang', related_color, meta['thickness'])['name'])
+                        related_names.append(build_huqiang_name(meta['thickness'], related_color, meta['craft']))
                     
                     for related_name in related_names:
                         # Check output_dir first

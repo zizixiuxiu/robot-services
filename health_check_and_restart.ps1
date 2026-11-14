@@ -10,8 +10,9 @@ $services = @(
     @{ Name = "csv-board";         Port = 8004; ComposeDir = "D:\Services\robot-services\csv-board\deploy\docker" },
     @{ Name = "pvc-classify";      Port = 8005; ComposeDir = "D:\Services\robot-services\pvc-classify\deploy\docker" },
     @{ Name = "workshop-order";    Port = 8006; ComposeDir = "D:\Services\robot-services\workshop-order\deploy\docker" },
-    @{ Name = "quote-maker";       Port = 8007; ComposeDir = "D:\Services\robot-services\quote-maker\deploy\docker" },
-    @{ Name = "simple-ims";        Port = 8090; ComposeDir = "D:\Services\robot-services\simple-ims\deploy\docker" }
+    @{ Name = "quote-maker";       Port = 8007; ComposeDir = "D:\Services\robot-services\quote-maker\deploy\docker" }
+    # 2026-11-11 simple-ims 已弃用（服务器已替代），移出保活名单
+    # @{ Name = "simple-ims";        Port = 8090; ComposeDir = "D:\Services\robot-services\simple-ims\deploy\docker" }
 )
 
 function Restart-DockerCompose($composeDir, $name) {

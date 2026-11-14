@@ -28,6 +28,43 @@ from openpyxl.utils import get_column_letter, column_index_from_string
 from openpyxl.worksheet.properties import PageSetupProperties
 
 
+class InputError(ValueError):
+    """上传的文件不符合预期、但用户自己能修（不是服务内部故障）。
+
+    HTTP 层据此返回 400 并把原话转达给用户，而不是 500 + 一句没用的内部报错。
+    """
+
+
+_XLS_OLE2_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+_GENERIC_INPUT_HINT = "无法识别的文件格式：办公室考勤需要打卡机导出的 .xls 刷卡记录表"
+_DIST_SHEET_HINT = ("当前上传的是考勤系统生成的「分发/汇总」表，不是刷卡记录表；"
+                    "请上传打卡机导出的原始「员工刷卡记录表」（.xls）")
+
+
+def _describe_unsupported_input(input_path: str) -> str:
+    """文件不是旧版 .xls 时，尽量说清它到底是什么，好让用户知道该改传什么。"""
+    try:
+        wb = load_workbook(input_path, read_only=True, data_only=True)
+    except Exception:
+        return _GENERIC_INPUT_HINT
+    try:
+        # 本服务产出的分发/汇总表：sheet 名形如「{M}月部门分发」
+        if any("部门分发" in (ws.title or "") for ws in wb.worksheets):
+            return _DIST_SHEET_HINT
+        # 真表头在第 1~3 行之间（第 1 行常是合并标题，表头在第 2 行）
+        for ws in wb.worksheets:
+            for row in ws.iter_rows(min_row=1, max_row=3, values_only=True):
+                cells = {str(v).strip() for v in row if v is not None}
+                if {"工号：", "姓名："} & cells:
+                    return ("这是 .xlsx 格式的刷卡记录表；办公室考勤目前只支持 .xls，"
+                            "请在 Excel 里「另存为 .xls」后重新上传")
+                if {"打卡地点", "工号"} <= cells:
+                    return _DIST_SHEET_HINT
+        return _GENERIC_INPUT_HINT
+    finally:
+        wb.close()
+
+
 # 汇总表 部门分发 列结构：每 4 列一组（上班时间、下班时间、小时数公式、天数）
 SUMMARY_DAY_START_COL = 6  # F 列，第 1 天上班时间
 SUMMARY_DAY_COLS_PER_DAY = 4
@@ -38,13 +75,15 @@ DIST_DAY_START_COL = 6
 # 原始记录最多 31 天
 MAX_DAYS_IN_MONTH = 31
 
-# 异常判定：上班晚于 08:30 记迟到；下班（当天最后一次刷卡）早于阈值记早退（含夜班早上下班）。
-# 夏季（5月1日 ~ 10月7日国庆假期）阈值 18:00；冬季（10月8日国庆回来 ~ 次年4月底）阈值 17:40。
+# 办公室作息（2026-11 起）：上午 08:30-12:00，下午 13:00-17:30。
+# 异常判定：上班晚于 08:30 记迟到；下班（当天最后一次刷卡）早于 17:30 记早退（含夜班早上下班）。
+# 说明：12:00 / 13:00 这两个午休边界目前不参与判定——汇总表和分发表每天只有「上班 / 下班」
+# 两个格子，没有位置承载"午休提前走"和"下午上班迟到"，所以只判当天首、末两次打卡。
+# 旧规则（夏季 18:00 / 冬季 17:40 分季节）自 2026-11 起作废。
 LATE_THRESHOLD = datetime.time(8, 30)
-SUMMER_EARLY_LEAVE_THRESHOLD = datetime.time(18, 0)
-WINTER_EARLY_LEAVE_THRESHOLD = datetime.time(17, 40)
-WINTER_START_MONTH = 10
-WINTER_START_DAY = 8
+EARLY_LEAVE_THRESHOLD = datetime.time(17, 30)
+MORNING_END = datetime.time(12, 0)
+AFTERNOON_START = datetime.time(13, 0)
 FLAG_HEADER_RE = re.compile(r"^\d{1,2}日异常$")
 
 # 每日考勤时间单元格颜色标记
@@ -67,14 +106,14 @@ def _time_cell_fill(all_times: List[datetime.time],
     position 为 all_times 中的 0-based 下标。
     - 仅 1 次刷卡：绿色
     - 上班时间（第 1 个时间）> 08:30：红色
-    - 下班时间（最后 1 个时间）< 季节阈值：黄色
+    - 下班时间（最后 1 个时间）< 17:30：黄色
     """
     n = len(all_times)
     if n == 1:
         return SINGLE_FILL
     if position == 0 and all_times[0] > LATE_THRESHOLD:
         return LATE_FILL
-    if position == n - 1 and all_times[-1] < _early_leave_threshold(month, day):
+    if position == n - 1 and all_times[-1] < EARLY_LEAVE_THRESHOLD:
         return EARLY_FILL
     return None
 
@@ -86,14 +125,14 @@ def _dist_day_cell_fill(all_times: List[datetime.time],
     分发表每天一列的单元格颜色。
     - 仅 1 次刷卡：绿色
     - 上班时间 > 08:30：红色（优先）
-    - 下班时间 < 季节阈值：黄色
+    - 下班时间 < 17:30：黄色
     """
     n = len(all_times)
     if n == 1:
         return SINGLE_FILL
     if all_times[0] > LATE_THRESHOLD:
         return LATE_FILL
-    if all_times[-1] < _early_leave_threshold(month, day):
+    if all_times[-1] < EARLY_LEAVE_THRESHOLD:
         return EARLY_FILL
     return None
 
@@ -144,11 +183,12 @@ def get_month_label(month: int) -> str:
 
 
 def load_office_adjustments(month: int,
-                            config_path: Optional[Path] = None) -> Tuple[Set[str], Set[str], Set[Tuple[str, int]]]:
+                            config_path: Optional[Path] = None
+                            ) -> Tuple[Set[str], Set[str], Set[Tuple[str, int]], Dict[str, int]]:
     """Load summary-only office adjustments observed in the reference outputs."""
     path = Path(config_path) if config_path else OFFICE_ADJUSTMENTS_FILE
     if not path.exists():
-        return set(), set(), set()
+        return set(), set(), set(), {}
     with path.open("r", encoding="utf-8-sig") as f:
         data = json.load(f)
     month_rules = (data.get("months") or {}).get(str(month), {})
@@ -181,7 +221,44 @@ def load_office_adjustments(month: int,
             except (TypeError, ValueError):
                 continue
 
-    return exclude_names, summary_exclude_names, single_as_out_dates
+    # 顶层 clock_in_offset_minutes：指定员工当天最早打卡时间的固定偏移（分钟，负数为提前），全月份生效
+    clock_in_offsets: Dict[str, int] = {}
+    for item in data.get("clock_in_offset_minutes", []):
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name", "")).strip()
+        if not name:
+            continue
+        try:
+            clock_in_offsets[name] = int(item.get("minutes", 0))
+        except (TypeError, ValueError):
+            continue
+
+    return exclude_names, summary_exclude_names, single_as_out_dates, clock_in_offsets
+
+
+def _shift_time(t: datetime.time, minutes: int) -> datetime.time:
+    """将 time 偏移指定分钟数（可为负），按一天 1440 分钟回绕。"""
+    total = (t.hour * 60 + t.minute + t.second / 60 + minutes) % 1440
+    whole = int(total)
+    return datetime.time(whole // 60, whole % 60, int(round((total - whole) * 60)))
+
+
+def apply_clock_in_offsets(employees: Dict[str, dict], offsets: Dict[str, int]) -> None:
+    """对指定员工的每天最早打卡时间做固定偏移，下游汇总/分发/迟到标红自动生效。"""
+    if not offsets:
+        return
+    for name, minutes in offsets.items():
+        emp = employees.get(name)
+        if not emp or not emp.get('days'):
+            continue
+        for day_data in emp['days'].values():
+            times = day_data.get('all_times')
+            if not times:
+                continue
+            new_first = _shift_time(times[0], minutes)
+            times[0] = new_first
+            day_data['clock_in'] = new_first
 
 
 def resolve_templates(input_path: str) -> Tuple[Path, Optional[Path], str, str, bool]:
@@ -460,7 +537,15 @@ def parse_input(input_path: str) -> Dict[str, dict]:
                              'all_times': List[time]}},
         }}
     """
-    book = xlrd.open_workbook(input_path, formatting_info=False)
+    # 前置体检：xlrd 2.x 只认 OLE2 魔数的旧版 .xls（这正是它自己的接受条件），
+    # 所以先拦一道，才能给出人话，而不是 XLRDError: Excel xlsx file; not supported
+    with open(input_path, "rb") as _f:
+        if _f.read(8) != _XLS_OLE2_MAGIC:
+            raise InputError(_describe_unsupported_input(input_path))
+    try:
+        book = xlrd.open_workbook(input_path, formatting_info=False)
+    except xlrd.biffh.XLRDError as e:
+        raise InputError("文件已损坏或不是有效的 .xls，请重新导出原始刷卡记录表") from e
     sheet = book.sheet_by_index(0)
 
     employees: Dict[str, dict] = {}
@@ -544,6 +629,9 @@ def parse_input(input_path: str) -> Dict[str, dict]:
         }
         i = j
 
+    if not employees:
+        raise InputError("未在文件中找到「工号：/姓名：」标记，"
+                         "请确认上传的是打卡机导出的原始刷卡记录表")
     return employees
 
 
@@ -1439,18 +1527,11 @@ def _build_dist_extra_cell_value(input_times: List[datetime.time]) -> Optional[s
     return None
 
 
-def _early_leave_threshold(month: int, day: int) -> datetime.time:
-    """夏季（5/1 ~ 10/7 国庆假期）18:00；冬季（10/8 国庆回来 ~ 次年 4 月底）17:40。"""
-    is_winter = (
-        month < 5
-        or month > WINTER_START_MONTH
-        or (month == WINTER_START_MONTH and day >= WINTER_START_DAY)
-    )
-    return WINTER_EARLY_LEAVE_THRESHOLD if is_winter else SUMMER_EARLY_LEAVE_THRESHOLD
-
-
 def _attendance_flag(day_data: Optional[dict], month: int, day: int) -> Optional[str]:
-    """返回某天迟到/早退异常文本；无异常返回 None。"""
+    """返回某天迟到/早退异常文本；无异常返回 None。
+
+    month / day 保留是为了兼容既有调用方；作息统一后不再按季节区分阈值。
+    """
     if not day_data:
         return None
     times = sorted(set(day_data.get('all_times', [])))
@@ -1465,7 +1546,7 @@ def _attendance_flag(day_data: Optional[dict], month: int, day: int) -> Optional
 
     if clock_in > LATE_THRESHOLD:
         flags.append("迟到")
-    if clock_out < _early_leave_threshold(month, day):
+    if clock_out < EARLY_LEAVE_THRESHOLD:
         flags.append("早退")
 
     if not flags:
@@ -1774,7 +1855,7 @@ def _add_legend_row(ws, start_col: int, no_data_count: int = 0) -> None:
     row = ws.max_row + 2
     entries = [
         (LATE_FILL, "红=迟到(上班>8:30)"),
-        (EARLY_FILL, "黄=早退(下班早于 夏18:00/冬17:40)"),
+        (EARLY_FILL, "黄=早退(下班早于17:30)"),
         (SINGLE_FILL, "绿=单次打卡"),
     ]
     col = start_col
@@ -1820,12 +1901,11 @@ def finalize_office_summary(wb, year: int, month: int, days_in_month: int,
         cin_col, cout_col, hours_col, days_col = _summary_day_cols(day)
         ws_dist.cell(row=1, column=cin_col).value = f"{_weekday_label(year, month, day)} 首"
         ws_dist.cell(row=1, column=cout_col).value = "末"
-        # 每天的小时数/天数列分组折叠，默认收起为“每日首末卡”视图；合计列不进组
+        # 每天的小时数/天数列直接隐藏，不显示分组折叠按钮（避免顶部出现 +/-）
         for col in (hours_col, days_col):
             dim = ws_dist.column_dimensions[get_column_letter(col)]
-            dim.outline_level = 1
+            dim.outline_level = 0
             dim.hidden = True
-        ws_dist.column_dimensions[get_column_letter(days_col + 1)].collapsed = True
     _anchor_continuation_rows(ws_dist, 2, 2, range(SUMMARY_DAY_START_COL, day_end_col + 1))
     _add_legend_row(ws_dist, 2, no_data_count)
     _setup_print(ws_dist)
@@ -1901,7 +1981,7 @@ def generate(input_path: str, output_dir: str,
     year, month = detect_month(str(input_path))
     month_label = get_month_label(month)
     days_in_month = get_days_in_month(year, month)
-    default_excludes, default_summary_excludes, default_single_as_out = load_office_adjustments(month)
+    default_excludes, default_summary_excludes, default_single_as_out, clock_in_offsets = load_office_adjustments(month)
     if exclude_names:
         exclude_names = set(exclude_names) | default_excludes
     else:
@@ -1930,6 +2010,7 @@ def generate(input_path: str, output_dir: str,
         is_base = False
 
     employees = parse_input(str(input_path))
+    apply_clock_in_offsets(employees, clock_in_offsets)
     no_data_count = sum(1 for emp in employees.values() if not emp.get('days'))
     if include_names is not None:
         employees = {

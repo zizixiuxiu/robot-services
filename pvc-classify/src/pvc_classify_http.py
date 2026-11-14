@@ -101,6 +101,10 @@ def process_pvc(input_path: str, output_dir: str, req: dict) -> dict:
         encoded_files = [_encode_output_file(zip_path)]
         logger.info("转换完成: %s, 输出文件数=%d", filename, original_output_count)
 
+        # 剔除/保留的行要回传到飞书卡片上，按文件名加前缀（批量时能分清是哪个文件）
+        stem = Path(filename).stem
+        warnings = [f"【{stem}】{line}" for line in (result.get("warnings") or [])]
+
         return {
             "success": True,
             "filename": filename,
@@ -109,6 +113,9 @@ def process_pvc(input_path: str, output_dir: str, req: dict) -> dict:
             "zip_original_count": original_output_count,
             "quantity_total": result.get("quantity_total", 0),
             "quantity_files": result.get("quantity_files", []),
+            "excluded_rows": result.get("excluded_rows", []),
+            "kept_rows": result.get("kept_rows", []),
+            "warnings": warnings,
             "output_files": {filename: encoded_files},
         }
     except Exception as e:

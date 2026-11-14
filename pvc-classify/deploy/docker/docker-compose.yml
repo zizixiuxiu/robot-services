@@ -14,6 +14,7 @@ services:
       - ../../src:/app/src:ro
       - ../../../factory-common/factory_common:/app/factory_common:ro
       - ../../data/output:/app/data/output
+      - ../../data/resave_exchange:/app/data/resave_exchange
       - ../../logs:/app/logs
     environment:
       - PYTHONUNBUFFERED=1
