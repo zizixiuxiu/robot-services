@@ -20,8 +20,14 @@ NODE_EXE = "node"
 
 # 公共库 factory-common（Docker 中通过 ENV PYTHONPATH=/app 提供）
 sys.path.insert(0, str(WORK_DIR.parent.parent / "factory-common"))
+sys.path.insert(0, str(WORK_DIR))
 from factory_common.logging_utils import setup_logging
 from factory_common.http_skeleton import run_process_server
+
+try:                                   # 新版导出格式兼容层（2026-10 起）
+    import sheet_compat
+except Exception:                      # noqa: BLE001
+    sheet_compat = None
 
 # 默认模板路径；Docker 中通过环境变量 DEFAULT_TEMPLATE 覆盖为 /app/templates/...
 DEFAULT_TEMPLATE = Path(os.getenv(
@@ -58,6 +64,9 @@ def _detect_file_type(filename: str) -> str:
     if '综合查询' in name:
         return 'zhcx'
     if '联思' in name:
+        return 'liansi'
+    # 2026-10 起联思导出叫「经销商财务统计」，文件名里没有「联思」两个字
+    if '财务统计' in name:
         return 'liansi'
     if '奢匠' in name or '下单统计' in name or '线下' in name:
         return 'shejiang'
@@ -207,6 +216,19 @@ def _process_multi(req: dict, work_dir: str) -> dict:
             template_path = local_path
         elif ftype != 'unknown':
             file_map[ftype] = local_path
+
+    # 新版导出（2026-10 起）sheet 名/表头行/列顺序都变了，按表头名归一成老版式，
+    # 否则老脚本按固定列号取值会静默算错
+    if sheet_compat is not None and file_map:
+        for kind, path in list(file_map.items()):
+            try:
+                new_path = sheet_compat.NORMALIZERS[kind](path)
+                if new_path != path:
+                    logger.info("输入已归一版式: %s -> %s", os.path.basename(path),
+                                os.path.basename(new_path))
+                file_map[kind] = new_path
+            except Exception:  # noqa: BLE001
+                logger.exception("输入归一失败，按原样交给 node: %s", path)
 
     # 检查必要文件
     missing = []
