@@ -1,5 +1,24 @@
 # 机器人服务版本清单
 
+> ## ⚠️ 部署源已迁移（2026-11-14 核对）
+>
+> **本仓库不再等于生产代码。** 服务已在服务器平台化部署，改代码请去对应仓库：
+>
+> | 服务 | 生产部署源（GitHub） | 服务器路径 |
+> |---|---|---|
+> | workshop-order、pvc-classify、hardware-summary、order-split、order-summary、dealer-sales、dealer-report、quote-maker、pms-door-split、simple-ims、csv-board、door-skin-converter、homag-frame-csv | `zizixiuxiu/robot-platform` → `services/<服务名>/` | `/home/ops/robot-platform-tests/platform/` |
+> | feishu-ws-gateway、attendance-summary、door-skin（网关侧） | `zizixiuxiu/feishu-hub` | `/opt/feishu-hub/` |
+> | 联思订单流（liansi_*） | `zizixiuxiu/liansi-order-service` | `/opt/liansi/` |
+> | agent 层（dispatcher / trigger / robot_mcp） | `zizixiuxiu/agent-layer` | 本机 `D:\Services\agent-layer` |
+>
+> 本仓库保留为**开发副本与历史变更记录**。下表的「当前版本」只到 2026-09-23，
+> 10 月之后的改动（workshop-order 各页颜色检查、liansi 线条计数修复等）不在本表内，
+> 以各仓库的 commit 记录为准。
+>
+> 仍只存在于本仓库、服务器上没有对应部署的：`order-flow-monitor`（当前无容器运行）、
+> `factory-common`（共享库，各服务已各自内嵌一份）；宿主机辅助服务
+> `pvc-classify/host/excel_resave_service.py`（8017）与 `pvc-trigger`（8012）仍从本机运行。
+
 > 维护人：运维 / Kimi
 > 更新规则：每次发版（重建镜像并部署）后，更新对应行的「当前版本」和「变更说明」。
 > 回滚方法：`docker tag <镜像>:rollback-YYYYMMDD <镜像>:latest`，然后在对应 compose 目录执行 `docker compose up -d`。
